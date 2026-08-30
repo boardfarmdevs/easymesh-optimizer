@@ -1,0 +1,29 @@
+{
+  "schema": "optimizer.capabilities.v1",
+  "name": "0815-current-lab",
+  "capabilities": {
+    "rf-radio-pair-control": {"available": true, "evidence": "wmediumd APPLY/GET/dump control socket"},
+    "rf-atomic-generations": {"available": true, "evidence": "generation-checked atomic control with readback and restore"},
+    "current-link-metrics": {"available": true, "evidence": "controller /api/v1/clients RCPI and traffic counters"},
+    "measurement-receipt-time": {"available": true, "evidence": "associated and unassociated STA metrics retain controller receipt time; rev130 live cycles measured 12.5-13.6 second maximum age"},
+    "candidate-link-metrics": {"available": true, "evidence": "same-band hwsim Unassociated STA Link Metrics are correlated to Agent, RUID, STA and exact target BSSID; this generic capability does not imply cross-band measurements"},
+    "same-band-candidate-link-metrics": {"available": true, "evidence": "rev130 completed seven serialized transactions per ten-client cycle and returned 40 complete same-band candidate links"},
+    "cross-band-candidate-link-metrics": {"available": false, "evidence": "the active Unassociated STA query is same-band; no accepted Beacon, probe or capability adapter supplies exact cross-band target quality"},
+    "ap-load-metrics": {"available": false, "evidence": "no accepted timestamped per-BSS/AP utilization adapter"},
+    "backhaul-link-metrics": {"available": false, "evidence": "no optimizer-facing timestamped backhaul metric adapter"},
+    "btm-steering": {"available": true, "evidence": "steer.sh mandate path and bounded carousel acceptance"},
+    "association-verification": {"available": true, "evidence": "client link plus controller/API convergence verifier"},
+    "traffic-ping": {"available": true, "evidence": "accepted client traffic gate"},
+    "traffic-iperf3": {"available": false, "evidence": "traffic driver and capacity envelope not yet accepted"},
+    "frequency-qualified-snr": {"available": true, "evidence": "wmediumd patch 0012 atomically controls and restores source/destination/frequency overrides; rev130 RCPI 138->88->138 acceptance"},
+    "band-candidate-inventory": {"available": true, "evidence": "/api/v1/bsses exposes 30 controller-owned fronthaul BSS identities across 5 devices and 3 bands; rev130 observer maps 14 same-SSID candidates per client"},
+    "backhaul-band-control": {"available": false, "evidence": "configurator deliberately protects backhaul and no controller action adapter exists"},
+    "channel-width-control": {"available": false, "evidence": "hwsim OneWifi setup currently fixes effective test width at 20 MHz"},
+    "preassociation-probe-control": {"available": false, "evidence": "no safe probe-response suppression action adapter"},
+    "controlled-btm-response": {"available": false, "evidence": "no per-client accept/reject/ignore behavior fixture"},
+    "extender-rf-isolation": {"available": true, "evidence": "accepted isolation/recovery scenario and topology liveness path"},
+    "scale-profile-small": {"available": true, "evidence": "five mesh devices, ten private clients and ten IoT clients accepted on rev130"},
+    "scale-profile-medium": {"available": false, "evidence": "50-client provisioner exists; 64-radio runtime profile is not accepted"},
+    "scale-profile-stress": {"available": false, "evidence": "100 clients need a validated 105-radio hwsim path before runtime acceptance"}
+  }
+}

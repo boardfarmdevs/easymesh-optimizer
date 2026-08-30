@@ -1,0 +1,18 @@
+{
+  "schema": "optimizer.backhaul-observations.v1",
+  "observed_at": "2026-08-20T20:00:00Z",
+  "root": "02:00:00:00:00:20",
+  "nodes": [
+    "02:00:00:00:00:20",
+    "02:00:00:00:01:20",
+    "02:00:00:00:02:20"
+  ],
+  "edges": [
+    {"left": "02:00:00:00:00:20", "right": "02:00:00:00:01:20", "band": "2.4", "snr_db": 35, "phy_rate_mbps": 100, "utilization_percent": 40, "retry_percent": 5, "observed_at": "2026-08-20T20:00:00Z"},
+    {"left": "02:00:00:00:00:20", "right": "02:00:00:00:01:20", "band": "5", "snr_db": 34, "phy_rate_mbps": 700, "utilization_percent": 20, "retry_percent": 2, "observed_at": "2026-08-20T20:00:00Z"},
+    {"left": "02:00:00:00:00:20", "right": "02:00:00:00:01:20", "band": "6", "snr_db": 31, "phy_rate_mbps": 1200, "utilization_percent": 10, "retry_percent": 1, "observed_at": "2026-08-20T20:00:00Z"},
+    {"left": "02:00:00:00:01:20", "right": "02:00:00:00:02:20", "band": "2.4", "snr_db": 38, "phy_rate_mbps": 100, "utilization_percent": 45, "retry_percent": 6, "observed_at": "2026-08-20T20:00:00Z"},
+    {"left": "02:00:00:00:01:20", "right": "02:00:00:00:02:20", "band": "5", "snr_db": 40, "phy_rate_mbps": 800, "utilization_percent": 18, "retry_percent": 2, "observed_at": "2026-08-20T20:00:00Z"},
+    {"left": "02:00:00:00:01:20", "right": "02:00:00:00:02:20", "band": "6", "snr_db": 38, "phy_rate_mbps": 1200, "utilization_percent": 12, "retry_percent": 1, "observed_at": "2026-08-20T20:00:00Z"}
+  ]
+}

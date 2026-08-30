@@ -1,0 +1,43 @@
+{
+  "schema": "optimizer.traffic-suite.v1",
+  "profiles": [
+    {
+      "id": "idle-keepalive",
+      "description": "No offered load beyond association maintenance.",
+      "driver": "none",
+      "requirements": [],
+      "schedule": []
+    },
+    {
+      "id": "latency-probe",
+      "description": "Continuous low-rate probes expose loss and roam interruption.",
+      "driver": "ping",
+      "requirements": ["traffic-ping"],
+      "schedule": [{"group": "all-clients", "start_ms": 0, "duration": "world", "interval_ms": 200, "target": "10.0.0.1"}]
+    },
+    {
+      "id": "constant-load",
+      "description": "Every present client offers a constant downstream flow.",
+      "driver": "iperf3",
+      "requirements": ["traffic-iperf3"],
+      "schedule": [{"group": "present-clients", "start_ms": 0, "duration": "world", "direction": "downstream", "rate_mbps": 20}]
+    },
+    {
+      "id": "bursty-apps",
+      "description": "Deterministic staggered short flows emulate interactive and video bursts.",
+      "driver": "iperf3",
+      "requirements": ["traffic-iperf3"],
+      "schedule": [
+        {"group": "odd-clients", "start_ms": 5000, "period_ms": 15000, "on_ms": 3000, "direction": "downstream", "rate_mbps": 40},
+        {"group": "even-clients", "start_ms": 10000, "period_ms": 15000, "on_ms": 3000, "direction": "upstream", "rate_mbps": 15}
+      ]
+    },
+    {
+      "id": "traffic-flash-crowd",
+      "description": "All present mobile clients begin a high-rate flow together at 20 seconds.",
+      "driver": "iperf3",
+      "requirements": ["traffic-iperf3"],
+      "schedule": [{"group": "mobile-clients", "start_ms": 20000, "duration_ms": 30000, "direction": "downstream", "rate_mbps": 50}]
+    }
+  ]
+}
