@@ -58,12 +58,16 @@ def _positive_int(value: str) -> int:
 
 
 def _live(args, mode: str) -> int:
+    policy = ThresholdPolicy(load_policy(args.policy)) if mode != "observe" else None
     candidate_provider = None
     if args.candidate_provider == "controller":
         candidate_provider = ControllerCandidateProvider(
             args.base_url,
             allow_simulated=args.allow_simulated_candidates,
             request_attempts=args.candidate_attempts,
+            client_selector=(
+                policy.requires_candidate_measurement if policy else None
+            ),
         )
     observer = ControllerObserver(
         args.base_url,
@@ -71,7 +75,6 @@ def _live(args, mode: str) -> int:
         trust_api_metric_timestamp=args.trust_api_metric_timestamp,
     )
     journal = Journal(args.journal)
-    policy = ThresholdPolicy(load_policy(args.policy)) if mode != "observe" else None
     state = PolicyState()
     actuator = SteerActuator(args.steer_script) if mode == "act" else None
     # Verification only needs the resulting association. Re-running the active

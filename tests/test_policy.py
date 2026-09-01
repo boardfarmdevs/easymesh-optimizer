@@ -26,6 +26,32 @@ def test_missing_metric_freshness_is_a_safe_no_action():
     assert decision(result).reason == "current_metric_freshness_unknown"
 
 
+def test_candidate_measurement_selection_matches_current_metric_gates():
+    engine = policy(current_rcpi_below=100)
+    weak = snapshot(0, current_rcpi=90)
+    acceptable = snapshot(0, current_rcpi=130)
+    missing = snapshot(0, current_rcpi=None)
+    stale = snapshot(0, current_rcpi=90, metric_age=8)
+    immature = snapshot(0, current_rcpi=90, association_uptime=19)
+
+    assert engine.requires_candidate_measurement(
+        weak.clients[0], weak.observed_at
+    ) is True
+    for blocked in (acceptable, missing, stale, immature):
+        assert engine.requires_candidate_measurement(
+            blocked.clients[0], blocked.observed_at
+        ) is False
+
+
+def test_band_upgrade_selects_an_acceptable_current_link_for_measurement():
+    engine = policy(band_upgrade_enabled=True, current_rcpi_below=100)
+    current = snapshot(0, current_rcpi=130)
+
+    assert engine.requires_candidate_measurement(
+        current.clients[0], current.observed_at
+    ) is True
+
+
 def test_stale_candidate_is_a_safe_no_action():
     result = policy().evaluate(snapshot(0, target_age=8))
     assert decision(result).reason == "fresh_candidate_metric_missing"

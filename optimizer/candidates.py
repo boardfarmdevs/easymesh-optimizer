@@ -18,6 +18,7 @@ from .model import (
 
 
 JsonRequester = Callable[[str, dict[str, Any]], dict[str, Any]]
+ClientSelector = Callable[[ClientObservation, str], bool]
 
 # The hwsim lab deliberately uses one fixed 20 MHz control channel per band.
 # The controller's current model exposes Band but leaves Radio.Channel at zero;
@@ -112,6 +113,7 @@ class ControllerCandidateProvider:
         max_parallel_agents: int = DEFAULT_MAX_PARALLEL_AGENTS,
         request_attempts: int = 1,
         retry_delay_seconds: float = 0.25,
+        client_selector: ClientSelector | None = None,
     ) -> None:
         if max_parallel_agents < 1:
             raise ValueError("max_parallel_agents must be positive")
@@ -125,8 +127,10 @@ class ControllerCandidateProvider:
         self.max_parallel_agents = max_parallel_agents
         self.request_attempts = request_attempts
         self.retry_delay_seconds = retry_delay_seconds
+        self.client_selector = client_selector
         self.last_raw: list[dict[str, Any]] = []
         self.last_rejected_candidate_keys: set[tuple[str, str]] = set()
+        self.last_selected_sta_macs: set[str] = set()
 
     def _channel(self, raw: dict[str, Any]) -> int:
         channel = int(raw.get("channel") or 0)
@@ -147,9 +151,14 @@ class ControllerCandidateProvider:
         bsses: list[dict[str, Any]],
         observed_at: str,
     ) -> Iterable[CandidateObservation]:
-        del observed_at  # individual controller receipt times are authoritative
         self.last_rejected_candidate_keys = set()
-        clients_by_mac = {item.sta_mac: item for item in clients}
+        clients_by_mac = {
+            item.sta_mac: item
+            for item in clients
+            if self.client_selector is None
+            or self.client_selector(item, observed_at)
+        }
+        self.last_selected_sta_macs = set(clients_by_mac)
         bss_by_id = {
             normalize_mac(item["bssid"]): item
             for item in bsses

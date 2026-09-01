@@ -111,6 +111,57 @@ def test_provider_batches_query_and_maps_ruid_to_exact_bssid():
     assert measured[0].metric_observed_at == "2026-08-21T20:00:00.123Z"
     assert measured[0].measurement_source.endswith(":simulated")
     assert provider.last_raw[0]["response"]["metrics"][0]["message_id"] == 42
+    assert provider.last_selected_sta_macs == {STA}
+
+
+def test_provider_queries_only_policy_selected_clients():
+    second_sta = "02:00:00:00:04:00"
+    calls = []
+
+    def request(_url, payload):
+        calls.append(payload)
+        selected_sta = payload["UnassocStaQueryList"][0]["channels"][0][
+            "sta_macs"
+        ][0]
+        result = response()
+        result["metrics"][0]["sta"] = selected_sta
+        return result
+
+    provider = ControllerCandidateProvider(
+        "http://controller",
+        requester=request,
+        allow_simulated=True,
+        client_selector=lambda item, _observed_at: item.sta_mac == second_sta,
+    )
+    measured = list(provider(
+        (client(), replace(client(), sta_mac=second_sta)),
+        (inventory(), replace(inventory(), sta_mac=second_sta)),
+        bsses(),
+        "2026-08-21T20:00:01.000Z",
+    ))
+
+    assert [item.sta_mac for item in measured] == [second_sta]
+    assert calls[0]["UnassocStaQueryList"][0]["channels"][0]["sta_macs"] == [
+        second_sta
+    ]
+    assert provider.last_selected_sta_macs == {second_sta}
+
+
+def test_provider_policy_selection_can_skip_all_active_queries():
+    calls = []
+    provider = ControllerCandidateProvider(
+        "http://controller",
+        requester=lambda _url, payload: calls.append(payload) or response(),
+        allow_simulated=True,
+        client_selector=lambda _item, _observed_at: False,
+    )
+
+    assert list(provider(
+        (client(),), (inventory(),), bsses(), "2026-08-21T20:00:01.000Z"
+    )) == []
+    assert calls == []
+    assert provider.last_raw == []
+    assert provider.last_selected_sta_macs == set()
 
 
 @pytest.mark.parametrize(

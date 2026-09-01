@@ -109,6 +109,31 @@ class ThresholdPolicy:
     def __init__(self, config: PolicyConfig) -> None:
         self.config = config
 
+    def requires_candidate_measurement(
+        self, client: ClientObservation, observed_at: str
+    ) -> bool:
+        """Return whether this policy can consume an active candidate sample.
+
+        This is a conservative pre-acquisition gate. State-specific gates such
+        as cooldown are intentionally omitted, but clients with no usable
+        current sample, an immature association, or an acceptable current link
+        cannot produce a steering decision from candidate measurements.
+        """
+        if client.rcpi is None:
+            return False
+        if not _fresh(
+            client.metric_observed_at,
+            parse_time(observed_at),
+            self.config.reject_stale_metrics_after_seconds,
+        ):
+            return False
+        if client.association_uptime_seconds < self.config.minimum_dwell_seconds:
+            return False
+        return (
+            client.rcpi < self.config.current_rcpi_below
+            or self.config.band_upgrade_enabled
+        )
+
     def evaluate(self, snapshot: Snapshot, prior: PolicyState | None = None) -> Evaluation:
         state = prior or PolicyState()
         decisions: list[Decision] = []
