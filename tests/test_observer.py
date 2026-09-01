@@ -211,3 +211,65 @@ def test_bss_inventory_supplies_client_context_when_topology_lags():
     assert result.clients[0].band == "5"
     assert result.clients[0].connected_device_name == "Extender-1"
     assert [item.bssid for item in result.candidates] == ["02:00:00:bb:bb:01"]
+
+
+def test_rejected_candidate_is_excluded_for_one_cycle_then_retried():
+    sta = "02:00:00:00:03:00"
+    candidate_bssid = "02:00:00:bb:bb:01"
+    payloads = {
+        "/api/v1/topology": {"nodes": []},
+        "/api/v1/clients": {"clients": [{
+            "mac": sta,
+            "connected_ap_mac": "02:00:00:00:09:20",
+            "connected_bssid": "02:00:00:aa:aa:01",
+            "client_metrics": {"rcpi": 138, "association_uptime_seconds": 42},
+        }]},
+        "/api/v1/devices": {"devices": [
+            {"mac": "02:00:00:00:09:20", "role": "Extender-1"},
+            {"mac": "02:00:00:00:08:20", "role": "Extender-2"},
+        ]},
+        "/api/v1/bsses": {"bsses": [
+            {"bssid": "02:00:00:aa:aa:01", "device_id": "02:00:00:00:09:20",
+             "radio_id": "02:00:00:00:09:00", "band": 1, "channel": 36,
+             "ssid": "private_ssid", "haul_type": "Fronthaul"},
+            {"bssid": candidate_bssid, "device_id": "02:00:00:00:08:20",
+             "radio_id": "02:00:00:00:08:00", "band": 1, "channel": 36,
+             "ssid": "private_ssid", "haul_type": "Fronthaul"},
+        ]},
+    }
+
+    class RejectOnce:
+        def __init__(self):
+            self.calls = 0
+            self.last_raw = []
+            self.last_rejected_candidate_keys = set()
+
+        def __call__(self, _clients, inventory, _bsses, _sampled_at):
+            self.calls += 1
+            assert [(item.sta_mac, item.bssid) for item in inventory] == [
+                (sta, candidate_bssid)
+            ]
+            self.last_rejected_candidate_keys = (
+                {(sta, candidate_bssid)} if self.calls == 1 else set()
+            )
+            return []
+
+    provider = RejectOnce()
+    observer = ControllerObserver(
+        "http://controller",
+        fetcher=lambda url: payloads[url.removeprefix("http://controller")],
+        candidate_provider=provider,
+        clock=lambda: datetime(2026, 8, 20, 20, 0, tzinfo=timezone.utc),
+    )
+
+    first = observer.observe()
+    assert first.candidates == ()
+    assert observer.last_raw["rejected_candidate_keys"] == [
+        (sta, candidate_bssid)
+    ]
+
+    second = observer.observe()
+    assert [(item.sta_mac, item.bssid) for item in second.candidates] == [
+        (sta, candidate_bssid)
+    ]
+    assert provider.calls == 2

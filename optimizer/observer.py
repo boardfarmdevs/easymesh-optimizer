@@ -211,14 +211,20 @@ class ControllerObserver:
                 )
             )
             measured_keys = {(item.sta_mac, item.bssid) for item in measured}
+            rejected_keys = set(getattr(
+                self.candidate_provider, "last_rejected_candidate_keys", set()
+            ))
             candidates = [
                 item
                 for item in candidates
                 if (item.sta_mac, item.bssid) not in measured_keys
+                and (item.sta_mac, item.bssid) not in rejected_keys
             ] + measured
             provider_raw = getattr(self.candidate_provider, "last_raw", None)
             if provider_raw is not None:
                 self.last_raw["candidate_transactions"] = provider_raw
+            if rejected_keys:
+                self.last_raw["rejected_candidate_keys"] = sorted(rejected_keys)
 
         # Active candidate queries finish after the passive API reads. The
         # immutable snapshot represents the completed observation interval;

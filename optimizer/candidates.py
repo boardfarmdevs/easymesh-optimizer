@@ -126,6 +126,7 @@ class ControllerCandidateProvider:
         self.request_attempts = request_attempts
         self.retry_delay_seconds = retry_delay_seconds
         self.last_raw: list[dict[str, Any]] = []
+        self.last_rejected_candidate_keys: set[tuple[str, str]] = set()
 
     def _channel(self, raw: dict[str, Any]) -> int:
         channel = int(raw.get("channel") or 0)
@@ -147,6 +148,7 @@ class ControllerCandidateProvider:
         observed_at: str,
     ) -> Iterable[CandidateObservation]:
         del observed_at  # individual controller receipt times are authoritative
+        self.last_rejected_candidate_keys = set()
         clients_by_mac = {item.sta_mac: item for item in clients}
         bss_by_id = {
             normalize_mac(item["bssid"]): item
@@ -216,8 +218,9 @@ class ControllerCandidateProvider:
         def query_agent(
             agent: str,
             jobs: list[tuple[str, list[tuple[int, int, str]]]],
-        ) -> list[CandidateObservation]:
+        ) -> tuple[list[CandidateObservation], set[tuple[str, str]]]:
             agent_measured: list[CandidateObservation] = []
+            agent_rejected: set[tuple[str, str]] = set()
             for query_radio, batch in jobs:
                 by_opclass: dict[int, dict[int, list[str]]] = {}
                 for opclass, channel, station in batch:
@@ -283,7 +286,11 @@ class ControllerCandidateProvider:
                     for opclass, channel, station in batch
                 }
                 received: set[tuple[str, str, str, int, int]] = set()
-                for metric in response.get("metrics", []):
+                # Successful controller replies always define both list-valued
+                # fields, but older helpers encoded an empty Go slice as JSON
+                # null.  Treat absent and null as the same empty compatibility
+                # value while retaining strict validation for list entries.
+                for metric in response.get("metrics") or []:
                     metric_agent = normalize_mac(metric["agent_al"])
                     radio = normalize_mac(metric["ruid"])
                     sta = normalize_mac(metric["sta"])
@@ -319,7 +326,39 @@ class ControllerCandidateProvider:
                                 band=candidate.band,
                             )
                         )
-                missing = sorted(expected - received)
+                rejected: set[tuple[str, str, str, int, int]] = set()
+                for candidate_error in response.get("rejected") or []:
+                    error_agent = normalize_mac(candidate_error["agent_al"])
+                    radio = normalize_mac(candidate_error["ruid"])
+                    sta = normalize_mac(candidate_error["sta"])
+                    error_code = int(candidate_error["error_code"])
+                    if error_agent != agent:
+                        raise CandidateMetricsError(
+                            f"candidate rejection agent {error_agent} does not match {agent}"
+                        )
+                    if error_code <= 0:
+                        raise CandidateMetricsError(
+                            f"candidate rejection has invalid error code: {error_code}"
+                        )
+                    _metric_time(candidate_error.get("received_at_ms"))
+                    matched = {
+                        key for key in expected
+                        if key[0] == error_agent and key[1] == radio and key[2] == sta
+                    }
+                    if not matched:
+                        raise CandidateMetricsError(
+                            "candidate response contains an unexpected rejection: "
+                            f"{sta}@{radio} error={error_code}"
+                        )
+                    if matched & received:
+                        raise CandidateMetricsError(
+                            f"candidate response both measured and rejected {sta}@{radio}"
+                        )
+                    rejected.update(matched)
+                    for response_key in matched:
+                        for candidate in targets.get(response_key, []):
+                            agent_rejected.add((candidate.sta_mac, candidate.bssid))
+                missing = sorted(expected - received - rejected)
                 if missing:
                     missing_text = ", ".join(
                         f"{sta}@{radio}/opclass-{opclass}/channel-{channel}"
@@ -329,9 +368,10 @@ class ControllerCandidateProvider:
                         f"candidate response for agent {agent} radio {query_radio} "
                         f"omitted {missing_text}"
                     )
-            return agent_measured
+            return agent_measured, agent_rejected
 
         measured_by_agent: dict[str, list[CandidateObservation]] = {}
+        rejected_by_agent: dict[str, set[tuple[str, str]]] = {}
         failures: dict[str, CandidateMetricsError] = {}
         if jobs_by_agent:
             with ThreadPoolExecutor(
@@ -345,7 +385,9 @@ class ControllerCandidateProvider:
                 for future in as_completed(future_agents):
                     agent = future_agents[future]
                     try:
-                        measured_by_agent[agent] = future.result()
+                        measured, rejected = future.result()
+                        measured_by_agent[agent] = measured
+                        rejected_by_agent[agent] = rejected
                     except CandidateMetricsError as error:
                         failures[agent] = error
 
@@ -356,6 +398,12 @@ class ControllerCandidateProvider:
         ]
         if failures:
             raise failures[sorted(failures)[0]]
+
+        self.last_rejected_candidate_keys = {
+            key
+            for agent in sorted(rejected_by_agent)
+            for key in rejected_by_agent[agent]
+        }
 
         measured = [
             item
