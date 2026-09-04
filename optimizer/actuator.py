@@ -9,7 +9,9 @@ from .model import Snapshot, normalize_mac
 from .policy import Decision
 
 
-Runner = Callable[..., subprocess.CompletedProcess[str]]
+# CompletedProcess was not subscriptable on the Python 3.8 build host. Keep
+# the alias importable there; field-level annotations still document strings.
+Runner = Callable[..., subprocess.CompletedProcess]
 
 
 @dataclass(frozen=True)
@@ -25,12 +27,20 @@ class ActionResult:
 
 
 class SteerActuator:
-    def __init__(self, script: str | Path, *, runner: Runner | None = None) -> None:
+    def __init__(
+        self,
+        script: str | Path,
+        *,
+        request_only: bool = False,
+        runner: Runner | None = None,
+    ) -> None:
         self.script = str(Path(script))
+        self.request_only = request_only
         self.runner = runner or subprocess.run
 
     def build_command(self, sta_mac: str, target_bssid: str) -> tuple[str, ...]:
-        return (self.script, normalize_mac(sta_mac), normalize_mac(target_bssid))
+        prefix = (self.script, "--request-only") if self.request_only else (self.script,)
+        return (*prefix, normalize_mac(sta_mac), normalize_mac(target_bssid))
 
     def execute(self, decision: Decision, snapshot: Snapshot) -> ActionResult:
         if decision.action != "steer" or decision.target_bssid is None:

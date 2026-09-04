@@ -36,6 +36,13 @@ def test_actuator_refuses_changed_source():
         SteerActuator("/repo/gen/steer.sh").execute(actionable(), snapshot(1, source=TARGET))
 
 
+def test_request_only_actuator_does_not_compete_with_scenario_rf_writer():
+    actuator = SteerActuator("/repo/gen/steer.sh", request_only=True)
+    assert actuator.build_command(STA, TARGET) == (
+        "/repo/gen/steer.sh", "--request-only", STA, TARGET
+    )
+
+
 def test_verifier_requires_observed_target_and_traffic():
     class Observer:
         values = iter([snapshot(0), snapshot(1, source=TARGET)])
