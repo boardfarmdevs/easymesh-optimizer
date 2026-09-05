@@ -21,10 +21,12 @@ JsonRequester = Callable[[str, dict[str, Any]], dict[str, Any]]
 ClientSelector = Callable[[ClientObservation, str], bool]
 
 # The hwsim lab deliberately uses one fixed 20 MHz control channel per band.
-# The controller's current model exposes Band but leaves Radio.Channel at zero;
-# this mapping is therefore only legal behind the explicit simulated-provider
-# opt-in.  A physical deployment must report its actual operating channel.
-LAB_CONTROL_CHANNELS = {"2.4": 6, "5": 36, "6": 5}
+# OneWifi can retain its requested 6 GHz channel (37) in controller telemetry
+# even when the single-wiphy hwsim AP is actually live on channel 1. Candidate
+# RCPI must query the frequency that wmediumd is controlling. This mapping is
+# legal only behind explicit simulated-provider opt-in; the room conductor
+# replaces it with channels derived from the live compiled radio inventory.
+LAB_CONTROL_CHANNELS = {"2.4": 6, "5": 36, "6": 1}
 
 # The unified-wifi-mesh data model stores at most EM_MAX_UNASSOC_STA (eight)
 # response entries.  Sending a larger request makes the current Agent omit a
@@ -42,6 +44,10 @@ HTTP_REQUEST_TIMEOUT_SECONDS = 20
 
 class CandidateMetricsError(RuntimeError):
     """The controller could not produce a trustworthy candidate snapshot."""
+
+
+class CandidateMetricsUnavailable(CandidateMetricsError):
+    """A temporary transport failure prevented a candidate measurement."""
 
 
 def operating_class(band: str | int, channel: int) -> int:
@@ -84,10 +90,16 @@ def _default_request(url: str, payload: dict[str, Any]) -> dict[str, Any]:
             detail = json.load(error)
         except (json.JSONDecodeError, UnicodeDecodeError):
             detail = {"message": error.read().decode(errors="replace")}
-        raise CandidateMetricsError(
+        error_type = (
+            CandidateMetricsUnavailable
+            if error.code in {408, 429, 502, 503, 504} else CandidateMetricsError
+        )
+        raise error_type(
             f"candidate query failed with HTTP {error.code}: {detail}"
         ) from error
-    except (OSError, TimeoutError, json.JSONDecodeError) as error:
+    except OSError as error:
+        raise CandidateMetricsUnavailable(f"candidate query failed: {error}") from error
+    except (json.JSONDecodeError, UnicodeDecodeError) as error:
         raise CandidateMetricsError(f"candidate query failed: {error}") from error
 
 
@@ -114,6 +126,8 @@ class ControllerCandidateProvider:
         request_attempts: int = 1,
         retry_delay_seconds: float = 0.25,
         client_selector: ClientSelector | None = None,
+        simulated_control_channels: dict[str, int] | None = None,
+        simulated_bss_channels: dict[str, int] | None = None,
     ) -> None:
         if max_parallel_agents < 1:
             raise ValueError("max_parallel_agents must be positive")
@@ -128,17 +142,41 @@ class ControllerCandidateProvider:
         self.request_attempts = request_attempts
         self.retry_delay_seconds = retry_delay_seconds
         self.client_selector = client_selector
+        self.override_simulated_control_channels = (
+            simulated_control_channels is not None
+        )
+        self.simulated_control_channels = {
+            normalize_band(band): int(channel)
+            for band, channel in (
+                simulated_control_channels or LAB_CONTROL_CHANNELS
+            ).items()
+        }
+        self.simulated_bss_channels = {
+            normalize_mac(bssid): int(channel)
+            for bssid, channel in (simulated_bss_channels or {}).items()
+        }
         self.last_raw: list[dict[str, Any]] = []
         self.last_rejected_candidate_keys: set[tuple[str, str]] = set()
         self.last_selected_sta_macs: set[str] = set()
 
     def _channel(self, raw: dict[str, Any]) -> int:
+        band = normalize_band(raw.get("band"))
+        bssid = normalize_mac(raw["bssid"]) if raw.get("bssid") else None
         channel = int(raw.get("channel") or 0)
+        if (
+            self.allow_simulated
+            and bssid is not None
+            and bssid in self.simulated_bss_channels
+        ):
+            return self.simulated_bss_channels[bssid]
+        if (
+            self.allow_simulated
+            and band in self.simulated_control_channels
+            and (self.override_simulated_control_channels or channel <= 0)
+        ):
+            return self.simulated_control_channels[band]
         if channel > 0:
             return channel
-        band = normalize_band(raw.get("band"))
-        if self.allow_simulated and band in LAB_CONTROL_CHANNELS:
-            return LAB_CONTROL_CHANNELS[band]
         raise CandidateMetricsError(
             f"BSS {raw.get('bssid', '<unknown>')} has no operating channel; "
             "the controller must report it for a physical candidate query"
@@ -268,7 +306,12 @@ class ControllerCandidateProvider:
                                 f": {error}" if self.request_attempts == 1
                                 else f" after {attempt} attempt(s): {error}"
                             )
-                            raise CandidateMetricsError(
+                            error_type = (
+                                CandidateMetricsUnavailable
+                                if isinstance(error, CandidateMetricsUnavailable)
+                                else CandidateMetricsError
+                            )
+                            raise error_type(
                                 f"candidate query failed for agent {agent} radio "
                                 f"{query_radio}{suffix}"
                             ) from error
@@ -406,7 +449,10 @@ class ControllerCandidateProvider:
             for transaction in transactions_by_agent[agent]
         ]
         if failures:
-            raise failures[sorted(failures)[0]]
+            failed_agent = min(failures, key=lambda agent: (
+                isinstance(failures[agent], CandidateMetricsUnavailable), agent
+            ))
+            raise failures[failed_agent]
 
         self.last_rejected_candidate_keys = {
             key

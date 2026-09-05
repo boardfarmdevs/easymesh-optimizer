@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from io import BytesIO
 from threading import Barrier, Lock
+import urllib.error
 
 from optimizer.candidates import (
     CandidateMetricsError,
+    CandidateMetricsUnavailable,
     ControllerCandidateProvider,
+    _default_request,
     operating_class,
 )
 from optimizer.model import CandidateObservation, ClientObservation
@@ -80,6 +84,119 @@ def test_lab_operating_class_mapping_is_frequency_qualified():
     assert operating_class("5", 36) == 115
     assert operating_class("5", 100) == 121
     assert operating_class("6", 5) == 131
+
+
+@pytest.mark.parametrize("status", [408, 429, 502, 503, 504, 400, 401, 403, 500])
+def test_http_errors_distinguish_temporary_unavailability(monkeypatch, status):
+    def fail(*_args, **_kwargs):
+        raise urllib.error.HTTPError(
+            "http://controller", status, "query failed", {},
+            BytesIO(b'{"message":"query failed"}'),
+        )
+
+    monkeypatch.setattr("urllib.request.urlopen", fail)
+    with pytest.raises(CandidateMetricsError) as caught:
+        _default_request("http://controller", {})
+    assert isinstance(caught.value, CandidateMetricsUnavailable) == (
+        status in {408, 429, 502, 503, 504}
+    )
+
+
+@pytest.mark.parametrize("error", [TimeoutError("timeout"), urllib.error.URLError("offline")])
+def test_transport_loss_is_temporary_unavailability(monkeypatch, error):
+    def fail(*_args, **_kwargs):
+        raise error
+
+    monkeypatch.setattr("urllib.request.urlopen", fail)
+    with pytest.raises(CandidateMetricsUnavailable):
+        _default_request("http://controller", {})
+
+
+def test_malformed_json_is_not_a_temporary_outage(monkeypatch):
+    monkeypatch.setattr("urllib.request.urlopen", lambda *_args, **_kwargs: BytesIO(b"invalid"))
+    with pytest.raises(CandidateMetricsError) as caught:
+        _default_request("http://controller", {})
+    assert not isinstance(caught.value, CandidateMetricsUnavailable)
+
+
+def test_retry_exhaustion_preserves_temporary_failure_type_and_context():
+    def fail(_url, _payload):
+        raise CandidateMetricsUnavailable("HTTP 504")
+
+    provider = ControllerCandidateProvider(
+        "http://controller", requester=fail, allow_simulated=True,
+        request_attempts=2, retry_delay_seconds=0,
+    )
+    with pytest.raises(CandidateMetricsUnavailable, match=f"agent {AGENT} radio {RADIO} after 2"):
+        provider((client(),), (inventory(),), bsses(), "2026-08-21T20:00:01.000Z")
+    assert [item["attempt"] for item in provider.last_raw] == [1, 2]
+
+
+def test_invalid_agent_response_is_not_hidden_by_another_agent_timeout():
+    second_agent = "02:00:00:00:0a:20"
+    second_bssid = "02:00:00:cc:cc:01"
+
+    def fail(_url, payload):
+        if payload["AlMac"] == AGENT:
+            raise CandidateMetricsUnavailable("HTTP 504")
+        raise CandidateMetricsError("invalid response")
+
+    provider = ControllerCandidateProvider("http://controller", requester=fail, allow_simulated=True)
+    with pytest.raises(CandidateMetricsError, match="invalid response") as caught:
+        provider(
+            (client(),),
+            (inventory(), replace(inventory(), device_id=second_agent, bssid=second_bssid)),
+            bsses() + [{**bsses()[0], "device_id": second_agent, "bssid": second_bssid}],
+            "2026-08-21T20:00:01.000Z",
+        )
+    assert not isinstance(caught.value, CandidateMetricsUnavailable)
+
+
+def test_simulated_provider_uses_live_channel_over_controller_requested_channel():
+    calls = []
+
+    def request(_url, payload):
+        calls.append(payload)
+        return {
+            "success": True,
+            "provider": "hwsim-wmediumd-read-only",
+            "simulated": True,
+            "metrics": [{
+                "agent_al": AGENT,
+                "ruid": RADIO,
+                "sta": STA,
+                "opclass": 131,
+                "channel": 1,
+                "rcpi": 54,
+                "received_at_ms": 1787342400123,
+            }],
+        }
+
+    provider = ControllerCandidateProvider(
+        "http://controller",
+        requester=request,
+        allow_simulated=True,
+        simulated_bss_channels={BSSID: 1},
+    )
+    six_client = replace(client(), band="6")
+    six_candidate = replace(inventory(), band="6")
+    six_bss = [{
+        **bsses()[0],
+        "band": 3,
+        "channel": 37,
+    }]
+
+    measured = list(provider(
+        (six_client,), (six_candidate,), six_bss,
+        "2026-08-21T20:00:01.000Z",
+    ))
+
+    query = calls[0]["UnassocStaQueryList"][0]
+    assert query == {
+        "opclass": 131,
+        "channels": [{"channel": 1, "sta_macs": [STA]}],
+    }
+    assert measured[0].rcpi == 54
 
 
 def test_provider_batches_query_and_maps_ruid_to_exact_bssid():
