@@ -1,0 +1,50 @@
+{
+  "schema_version": 1,
+  "sequence": 0,
+  "observed_at": "2026-08-21T20:00:00.000Z",
+  "controller_url": "recorded://team-input",
+  "health": {
+    "devices": 5,
+    "clients": 10,
+    "radios": 15,
+    "bsses": 30,
+    "source": "team-fixture"
+  },
+  "clients": [
+    {
+      "sta_mac": "02:00:00:00:03:00",
+      "connected_device_id": "02:00:00:00:09:20",
+      "connected_device_name": "Extender-1",
+      "connected_bssid": "02:00:00:aa:aa:01",
+      "rcpi": 90,
+      "association_uptime_seconds": 120,
+      "metric_observed_at": "2026-08-21T20:00:00.000Z",
+      "measurement_source": "team_test_fixture",
+      "band": "5"
+    }
+  ],
+  "candidates": [
+    {
+      "sta_mac": "02:00:00:00:03:00",
+      "bssid": "02:00:00:bb:bb:01",
+      "device_id": "02:00:00:00:08:20",
+      "device_name": "Extender-2",
+      "rcpi": 130,
+      "metric_observed_at": "2026-08-21T20:00:00.000Z",
+      "measurement_source": "team_test_fixture",
+      "band": "5",
+      "eligible": true
+    },
+    {
+      "sta_mac": "02:00:00:00:03:00",
+      "bssid": "02:00:00:cc:cc:01",
+      "device_id": "02:00:00:00:07:20",
+      "device_name": "Extender-3",
+      "rcpi": 95,
+      "metric_observed_at": "2026-08-21T20:00:00.000Z",
+      "measurement_source": "team_test_fixture",
+      "band": "5",
+      "eligible": true
+    }
+  ]
+}
