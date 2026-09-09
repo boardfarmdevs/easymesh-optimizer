@@ -4,7 +4,7 @@ import tempfile
 from pathlib import Path
 from subprocess import CompletedProcess, TimeoutExpired
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from room_demo.client_wifi import disconnected_client, read_client_link, reconnect_client, resume_bound_client
 from room_demo.recovery import RecoveryJournal, load_recovery, recover_medium
@@ -37,14 +37,17 @@ class ClientWifiTests(unittest.TestCase):
         self.assertEqual(load_recovery(self.path)["paused_clients"], [])
 
     def test_failed_resume_remains_recoverable_after_rf_restoration(self):
+        medium = Mock()
+        medium.connect.return_value.instance_id = "medium"
+        medium.connect.return_value.generation = 4
         self.journal.pause_client("wlan-client-012")
         self.journal.completed(4, True)
         with patch("room_demo.recovery.reconnect_client", side_effect=ActuatorError("unavailable")):
             with self.assertRaises(ActuatorError):
-                recover_medium(self.path, "unused")
+                recover_medium(self.path, "unused", client_factory=lambda _: medium)
         self.assertEqual(load_recovery(self.path)["paused_clients"], ["wlan-client-012"])
         with patch("room_demo.recovery.reconnect_client") as reconnect:
-            self.assertEqual(recover_medium(self.path, "unused")["status"], "already-restored")
+            self.assertEqual(recover_medium(self.path, "unused", client_factory=lambda _: medium)["status"], "already-restored")
         reconnect.assert_called_once_with("wlan-client-012")
         self.assertEqual(load_recovery(self.path)["paused_clients"], [])
 

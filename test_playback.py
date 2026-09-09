@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+from contextlib import nullcontext
 import tempfile
 import unittest
 from pathlib import Path
@@ -179,8 +180,28 @@ class PlaybackTests(unittest.TestCase):
         self.assertEqual(len(self.client.applied) - before, 1)
         self.assertEqual(self.session._environment_epoch - epoch, 1)
         commits = [event for event in self.store.all() if event["kind"] == "room.position.committed"]
-        self.assertEqual(len({event["payload"]["daemon_generation"] for event in commits}), 1)
-        self.assertEqual({event["payload"]["role"] for event in commits}, {"sta_01", "extender_1"})
+        self.assertEqual(commits, [])
+        frame = self.store.current()["latest"]["interaction.playback.progress"]["payload"]
+        self.assertEqual(frame["playback"]["time_ms"], 1000)
+        self.assertEqual(frame["roles"]["sta_01"]["position"], [3, 2])
+        self.assertEqual(frame["roles"]["extender_1"]["position"], [8, 2])
+        self.assertEqual(frame["daemon_generation"], self.client.generation)
+
+    def test_every_published_playback_projection_has_matching_clock_and_pose(self):
+        self.control("play")
+        observed = []
+        publish = self.store.emit
+        def observe(*args, **kwargs):
+            event = publish(*args, **kwargs)
+            state = self.store.current()
+            observed.append((state["playback"]["time_ms"],
+                             state["roles"]["sta_01"]["authoritative_position"]))
+            return event
+        with mock.patch.object(self.store, "emit", side_effect=observe):
+            self.tick()
+        self.assertTrue(observed)
+        self.assertTrue(all(position == [2 + elapsed // 1000, 2]
+                            for elapsed, position in observed), observed)
 
     def test_authorization_revision_and_idempotency(self):
         with self.assertRaises(InteractionError):
@@ -190,6 +211,27 @@ class PlaybackTests(unittest.TestCase):
         self.assertEqual(first, repeated)
         with self.assertRaises(InteractionError):
             self.engine.playback_control("pause", token=self.token, expected_revision=0, command_id="stale-command")
+
+    def test_presence_control_runs_even_when_rf_values_do_not_change(self):
+        self.session._roles["sta_01"]["present"] = False
+        updates, links = self.session._links_for_role("sta_01")
+        for item in updates:
+            key = (item["source"], item["destination"], item["frequency_mhz"])
+            value = (item["value"], item["override"])
+            self.session._applied_values[key] = value
+            self.client.values[key] = value
+        self.session._roles["sta_01"]["present"] = True
+        self.session.disconnect_client = mock.Mock(return_value=nullcontext())
+        self.session.reconnect_client = mock.Mock()
+        before = len(self.client.applied)
+        with mock.patch.object(self.session, "_links_for_role", return_value=(updates, links)):
+            for present in (False, True):
+                self.engine.presence("sta_01", present=present, token=self.token,
+                    expected_revision=self.engine.snapshot()["revision"],
+                    command_id=f"presence-noop-{present}")
+        self.session.disconnect_client.assert_called_once_with("sta_01")
+        self.session.reconnect_client.assert_called_once_with("sta_01")
+        self.assertEqual(len(self.client.applied), before)
 
     def test_default_worker_stops_cleanly(self):
         self.session._playback_thread = None

@@ -638,6 +638,7 @@ class RoomEngineTests(unittest.TestCase):
             minimum_update_interval=0,
         )
         self.engine = RoomEngine(session)
+        self.session = session
 
     def test_all_medium_operations_run_on_one_actor_thread(self):
         caller = threading.get_ident()
@@ -723,6 +724,29 @@ class RoomEngineTests(unittest.TestCase):
         self.assertTrue(self.engine.close())
         self.assertTrue(self.engine.snapshot()["restored"])
         self.assertFalse(self.client.closed)
+
+    def test_failed_close_preserves_error_and_terminal_snapshot(self):
+        self.engine.start()
+        failure = ActuatorError("restore readback failed")
+        with patch.object(self.session, "close", side_effect=failure):
+            with self.assertRaises(ActuatorError) as caught:
+                self.engine.close()
+        self.assertIs(caught.exception, failure)
+        state = self.engine.snapshot()
+        self.assertFalse(state["restored"])
+        self.assertEqual(state["fault"], str(failure))
+        self.assertFalse(self.engine.close())
+        self.session.close()
+
+    def test_failed_close_and_failed_snapshot_do_not_mask_original_error(self):
+        self.engine.start()
+        with patch.object(self.session, "close", side_effect=ActuatorError("original failure")), \
+                patch.object(self.session, "snapshot", side_effect=ValueError("snapshot failure")):
+            with self.assertRaisesRegex(ActuatorError, "original failure"):
+                self.engine.close()
+        self.assertEqual(self.engine.snapshot()["fault"], "original failure")
+        self.assertFalse(self.engine.close())
+        self.session.close()
 
     def test_duplicate_command_returns_original_result_without_second_write(self):
         self.engine.start()

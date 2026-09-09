@@ -155,6 +155,47 @@ class WorldSwitchTests(unittest.TestCase):
         self.apply("default")
         self.assertIsNone(self.engine.snapshot()["playback"]["checkpoint_ms"])
 
+    def test_asymmetric_mobility_rf_survives_world_switch_play_and_drag(self):
+        self.session.minimum_update_interval = 0
+        self.session._playback_thread = mock.Mock()
+        self.apply("home-a-asymmetric-link")
+        role = "sta_mobile_01"
+        self.assertEqual(self.session._nodes[role]["tx_gain_db_by_band"],
+                         {"2.4": -7, "5": -10, "6": -12})
+        golden = self.session._playback_world
+        def check_frame(frame):
+            station = self.plan["bindings"][role]["radio_tx_mac"]
+            for link in frame["links"]:
+                if role not in (link["source_role"], link["destination_role"]):
+                    continue
+                uplink = link["source_role"] == role
+                ap_role = link["destination_role"] if uplink else link["source_role"]
+                binding = self.plan["bindings"][ap_role]
+                for band, snr in link["snr_db_by_band"].items():
+                    ap_mac = binding["band_radios"][band]["tx_mac"]
+                    frequency = binding["fronthaul_frequencies_mhz"][band]
+                    pair = (station, ap_mac) if uplink else (ap_mac, station)
+                    self.assertEqual(self.client.values[(*pair, frequency)], (snr, True))
+        check_frame(golden["generations"][0])
+        self.engine.playback_control("play", token=self.token,
+            expected_revision=self.engine.snapshot()["revision"], command_id="asymmetry-play")
+        self.engine._call("_playback_tick")
+        self.engine._call("_playback_tick")
+        check_frame(next(frame for frame in golden["generations"] if frame["time_ms"] == 2000))
+        self.engine.position(role, position=[10, 6], final=True, token=self.token,
+            expected_revision=self.engine.snapshot()["revision"], command_id="asymmetry-drag")
+        self.assertEqual(self.session._nodes[role]["tx_gain_db_by_band"]["6"], -12)
+        self.apply("default")
+        self.assertNotIn("tx_gain_db_by_band", self.session._nodes[role])
+
+    def test_mobility_hash_mismatch_is_rejected_without_rf_writes(self):
+        world = load_json(ROOT / "golden/home-a-asymmetric-link.world.json")
+        world["mobility_sha256"] = "0" * 64
+        writes = len(self.client.applied)
+        with self.assertRaisesRegex(InteractionError, "installed mobility"):
+            self.apply(signed(world))
+        self.assertEqual(len(self.client.applied), writes)
+
     def test_switch_stops_playback_clears_pins_and_retains_backhaul(self):
         self.session._playback_thread = mock.Mock()
         self.engine.playback_control("play", token=self.token, expected_revision=0, command_id="start-playback")
