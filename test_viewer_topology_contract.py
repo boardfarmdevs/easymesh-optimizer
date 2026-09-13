@@ -11,6 +11,12 @@ VIEWER = (
 
 
 class ViewerTopologyContractTests(unittest.TestCase):
+    def test_frame_observation_is_opt_in_and_follows_webgl_submission(self):
+        source = VIEWER.read_text(encoding="utf-8")
+        self.assertIn("observeFrames: frameTimings ? (observer)", source)
+        self.assertIn("let frameObserver = null;", source)
+        self.assertIn("renderer.render(scene, camera);\n    if (frameObserver)", source)
+
     def test_world_load_applies_immediately_and_observers_rehydrate_authoritative_roles(self):
         source = VIEWER.read_text(encoding="utf-8")
         self.assertNotIn('id="applyWorld"', source)
