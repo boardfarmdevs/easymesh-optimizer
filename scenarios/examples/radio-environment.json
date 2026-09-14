@@ -1,0 +1,10 @@
+{
+  "schema": "optimizer.radio-environment.v1",
+  "observed_at": "2026-08-20T20:00:00Z",
+  "maximum_metric_age_seconds": 30,
+  "radios": [
+    {"radio_id": "02:00:00:00:01:24", "band": "2.4", "current_width_mhz": 20, "allowed_widths_mhz": [20, 40], "primary_utilization_percent": 10, "secondary_utilization_percent": 5, "overlapping_neighbor_percent": 5, "radar_risk": 0, "observed_at": "2026-08-20T20:00:00Z"},
+    {"radio_id": "02:00:00:00:01:50", "band": "5", "current_width_mhz": 80, "allowed_widths_mhz": [20, 40, 80, 160], "primary_utilization_percent": 20, "secondary_utilization_percent": 10, "overlapping_neighbor_percent": 10, "radar_risk": 0.8, "observed_at": "2026-08-20T20:00:00Z"},
+    {"radio_id": "02:00:00:00:01:60", "band": "6", "current_width_mhz": 80, "allowed_widths_mhz": [20, 40, 80, 160], "primary_utilization_percent": 20, "secondary_utilization_percent": 10, "overlapping_neighbor_percent": 10, "radar_risk": 0, "observed_at": "2026-08-20T20:00:00Z"}
+  ]
+}

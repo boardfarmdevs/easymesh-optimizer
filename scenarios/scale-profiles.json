@@ -1,0 +1,8 @@
+{
+  "schema": "optimizer.scale-profiles.v1",
+  "profiles": [
+    {"id": "small", "agents": 5, "clients": 20, "status": "accepted", "evidence": "rev130 mixed-cohort topology, traffic, carousel and steering gates"},
+    {"id": "medium", "agents": 5, "clients": 50, "status": "planned", "evidence": "count-driven provisioner and 64-radio plan exist; runtime acceptance pending"},
+    {"id": "stress", "agents": 5, "clients": 100, "status": "blocked", "evidence": "requires a validated 105-radio hwsim allocation path"}
+  ]
+}

@@ -1,0 +1,24 @@
+{
+  "schema": "optimizer.experiment-suite.v1",
+  "name": "home-policy-research-v1",
+  "capabilities": "capabilities-current.json",
+  "traffic_suite": "traffic-profiles.json",
+  "scenario_catalog": "scenario-catalog.json",
+  "worlds": [
+    "../../wmediumd/configurator/worlds/golden/home-a-stationary.world.json",
+    "../../wmediumd/configurator/worlds/golden/home-a-slow-walk-ten.world.json",
+    "../../wmediumd/configurator/worlds/golden/home-b-slow-walk-ten.world.json",
+    "../../wmediumd/configurator/worlds/golden/home-a-border-hover.world.json",
+    "../../wmediumd/configurator/worlds/golden/home-a-flash-crowd.world.json",
+    "../../wmediumd/configurator/worlds/golden/home-a-disappear-reappear.world.json",
+    "../../wmediumd/configurator/worlds/golden/home-a-fast-transit.world.json",
+    "../../wmediumd/configurator/worlds/golden/home-a-extender-loss-recovery.world.json",
+    "../../wmediumd/configurator/worlds/golden/home-a-asymmetric-link.world.json",
+    "../../wmediumd/configurator/worlds/golden/home-a-band-walk-small.world.json"
+  ],
+  "policies": [
+    "../configs/threshold-policy.yaml",
+    "../configs/band-upgrade-policy.yaml"
+  ],
+  "seeds": [1701]
+}
