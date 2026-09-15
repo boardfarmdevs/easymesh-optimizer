@@ -14,7 +14,7 @@ class StreamingCandidateProvider:
     """Single-flight native collection with nonblocking, identity-bound publication."""
 
     def __init__(self, provider, *, maximum_clients=8, maximum_age_seconds=30,
-                 identity=None, updated=None, telemetry=None):
+                 identity=None, client_identity=None, updated=None, telemetry=None):
         if maximum_clients < 1 or maximum_age_seconds <= 0:
             raise ValueError("streaming collection requires positive bounds")
         self.provider = provider
@@ -22,6 +22,7 @@ class StreamingCandidateProvider:
         self.maximum_clients = maximum_clients
         self.maximum_age_seconds = maximum_age_seconds
         self.identity = identity
+        self.client_identity = client_identity
         self.updated = updated or (lambda: None)
         self.telemetry = telemetry or (lambda _value: None)
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="native-candidate-stream")
@@ -78,7 +79,9 @@ class StreamingCandidateProvider:
             self._rejections.clear()
             self._queried.clear()
             self._identity = identity
-        owners = {client.sta_mac: RollingCandidateProvider._owner(client) for client in clients}
+        owners = {client.sta_mac: (RollingCandidateProvider._owner(client),
+                                  self.client_identity(client.sta_mac) if self.client_identity else None)
+                  for client in clients}
         for station in self._owners.keys() | owners.keys():
             if self._owners.get(station) != owners.get(station):
                 self._versions[station] = self._versions.get(station, 0) + 1

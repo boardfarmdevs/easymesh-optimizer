@@ -227,3 +227,36 @@ def test_native_provider_epoch_reset_source_and_context_guards(tmp_path):
     status.write_text(json.dumps({"schema": "easymesh.rf-survey-bridge.v1", "source": "fixed-fixture",
                                   "instance_id": "one", "recorded_monotonic_ns": 1800000000}))
     assert provider.enrich(value, raw, now_ns=1800000000).bss_loads == ()
+
+@pytest.mark.parametrize("change,reason", [
+    ({"channel": 36}, "same_channel"),
+    ({"radio_id": "02:00:00:01:00:00"}, "same_radio"),
+    ({"epoch": "other"}, "provider_epoch_mismatch"),
+    ({"backhaul_hops": 2}, "additional_backhaul_hop"),
+    ({"backhaul_hops": None}, "backhaul_unknown"),
+    ({"utilization": 200}, "target_busy"),
+])
+def test_native_load_target_exclusions_are_specific_and_do_not_change_the_gate(change, reason):
+    value = loaded()
+    value = replace(value, bss_loads=(value.bss_loads[0], replace(value.bss_loads[1], **change)))
+    result = decision(value)
+    assert result.action == "none"
+    assert result.reason == "native_load_no_safe_quieter_target"
+    assessment = result.load_evidence["candidate_assessments"][0]
+    assert assessment["bssid"] == TARGET and assessment["state"] == "excluded"
+    assert reason in assessment["reasons"]
+
+
+def test_missing_native_target_report_is_not_zero_utilization():
+    value = loaded()
+    result = decision(replace(value, bss_loads=value.bss_loads[:1]))
+    target = result.load_evidence["candidate_assessments"][0]
+    assert target["reasons"] == ["load_missing"]
+    assert target["utilization"] is None
+
+
+def test_selected_load_target_keeps_existing_hold_and_records_selection():
+    result = decision(loaded())
+    assert result.reason == "load_condition_hold_not_met" and result.action == "none"
+    target = result.load_evidence["candidate_assessments"][0]
+    assert target["state"] == "selected" and target["reasons"] == []

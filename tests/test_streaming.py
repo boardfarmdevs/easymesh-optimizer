@@ -86,6 +86,48 @@ def test_world_change_cancels_old_collector_and_discards_publication(streaming):
     assert not delegate.generation_guard()
 
 
+def test_rf_change_discards_cached_and_pending_measurements_without_cancelling_other_clients(streaming):
+    provider, delegate = streaming
+    epochs = {}
+    provider.client_identity = lambda station: epochs.get(station, 0)
+    original = snapshot(0)
+    station = original.clients[0].sta_mac
+    other = "02:00:00:00:04:00"
+    sample = replace(original, clients=(*original.clients, replace(original.clients[0], sta_mac=other)),
+                     candidates=(*original.candidates, replace(original.candidates[0], sta_mac=other)))
+    collect(provider, sample)
+    assert delegate.published.wait(1)
+    assert len(collect(provider, sample)) == len(sample.candidates)
+    versions = dict(provider._versions)
+    provider._messages.put((provider._identity, versions, sample.candidates, set(),
+                            {"finished_at": sample.observed_at}, time.monotonic()))
+    epochs[station] = 1
+    assert {item.sta_mac for item in collect(provider, sample)} == {other}
+    assert delegate.generation_guard()
+    assert len(delegate.calls) == 1
+    epochs[station] = 2
+    provider._messages.put((provider._identity, versions, sample.candidates, set(),
+                            {"finished_at": sample.observed_at}, time.monotonic()))
+    assert {item.sta_mac for item in collect(provider, sample)} == {other}
+
+
+def test_rf_change_invalidates_rejections_and_preserves_fair_queue_position(streaming):
+    provider, delegate = streaming
+    epoch = [0]
+    provider.client_identity = lambda _station: epoch[0]
+    sample = snapshot(0)
+    collect(provider)
+    assert delegate.published.wait(1)
+    collect(provider)
+    key = (sample.clients[0].sta_mac, sample.candidates[0].bssid)
+    provider._rejections[key] = (provider._versions[key[0]], sample.observed_at)
+    queried = dict(provider._queried)
+    epoch[0] = 1
+    assert collect(provider) == []
+    assert not provider.last_rejected_candidate_keys
+    assert provider._queried == queried
+
+
 @pytest.mark.parametrize("failure", [CandidateMetricsError("wrong radio"), CandidateMetricsUnavailable("busy")])
 def test_failure_classification_is_preserved(streaming, failure):
     provider, delegate = streaming

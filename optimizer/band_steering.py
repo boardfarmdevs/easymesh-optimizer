@@ -24,7 +24,20 @@ class BandThresholdPolicy(ThresholdPolicy):
         return decision, state
 
 
-def band_policy(config):
+def received_scan_enabled(profile):
+    settings = (profile or {}).get("profile", {})
+    return len(settings.get("allowed_bands", [])) > 1 or settings.get("measurement_mode") == "received_same_band"
+
+
+def same_band_received(profile):
+    return (profile or {}).get("profile", {}).get("measurement_mode") == "received_same_band"
+
+
+def band_policy(config, *, same_band=False):
+    if same_band:
+        return BandThresholdPolicy(replace(config, band_upgrade_enabled=False, load_aware_enabled=False,
+                                           condition_hold_seconds=1, minimum_dwell_seconds=3,
+                                           reject_stale_metrics_after_seconds=2))
     return BandThresholdPolicy(replace(config, band_upgrade_enabled=True, load_aware_enabled=False,
                                    current_rcpi_below=100, minimum_target_gain_rcpi=4,
                                    minimum_band_upgrade_target_rcpi=120, maximum_band_upgrade_loss_rcpi=16,
@@ -32,9 +45,20 @@ def band_policy(config):
                                    reject_stale_metrics_after_seconds=2))
 
 
-def evaluate_band_clients(policy, snapshot, prior, stations):
+def evaluate_band_clients(policy, snapshot, prior, stations, profiles=None):
     if not stations:
         return policy.evaluate(snapshot, prior)
+    received_only = {station for station in stations if same_band_received((profiles or {}).get(station))}
+    if received_only:
+        ordinary = evaluate_band_clients(policy, replace(snapshot, clients=tuple(
+            client for client in snapshot.clients if client.sta_mac not in received_only)),
+            prior, stations - received_only, profiles)
+        profiled = band_policy(policy.config, same_band=True).evaluate(replace(snapshot, clients=tuple(
+            client for client in snapshot.clients if client.sta_mac in received_only)), ordinary.state)
+        digest = hashlib.sha256((ordinary.policy_hash + profiled.policy_hash +
+                                 json.dumps(sorted(received_only))).encode()).hexdigest()
+        return Evaluation(digest, tuple(sorted(ordinary.decisions + profiled.decisions,
+                                               key=lambda item: item.sta_mac)), profiled.state)
     ordinary = policy.evaluate(replace(snapshot, clients=tuple(client for client in snapshot.clients
                                                               if client.sta_mac not in stations)), prior)
     profiled = band_policy(policy.config).evaluate(replace(snapshot, clients=tuple(client for client in snapshot.clients
@@ -120,6 +144,7 @@ class BandSteeringMeasurements:
                 self.requested.add(station)
             cached_identity, result = self.cache.get(station, (None, None))
             valid = (cached_identity == identity and result is not None
+                     and client.connected_bssid in result["samples"]
                      and all(0 <= (now - parse_time(sample["observed_at"])).total_seconds() <= 2
                              for sample in result["samples"].values()))
             if not valid:
@@ -147,6 +172,7 @@ class BandSteeringMeasurements:
                                     "elapsed_ms": result["elapsed_ms"], "observed_at": current["observed_at"],
                                     "serving_bssid": client.connected_bssid, "rejected": rejected,
                                     "allowed_bands": profile["profile"]["allowed_bands"]}
+            self.status[station]["measurement_mode"] = profile["profile"].get("measurement_mode", "received_multiband")
         return replace(snapshot, clients=tuple(clients), candidates=tuple(candidates))
 
     def in_flight(self, station):
@@ -165,15 +191,16 @@ class BandSteeringMeasurements:
             future.add_done_callback(lambda _future: self.updated())
 
 
-def band_fleet_status(fleet, snapshot, policy, stations, measurements):
+def band_fleet_status(fleet, snapshot, policy, stations, measurements, profiles=None):
     if not stations:
         return fleet
-    ordinary = set(client.sta_mac for client in snapshot.clients) - stations
-    plain = policy.evaluate(replace(snapshot, clients=tuple(client for client in snapshot.clients if client.sta_mac in ordinary)))
-    band = band_policy(policy.config).evaluate(replace(snapshot, clients=tuple(client for client in snapshot.clients if client.sta_mac in stations)))
+    evaluation = evaluate_band_clients(policy, snapshot, None, stations, profiles)
     settled = {"candidate_gain_too_small", "current_link_acceptable", "no_safe_band_upgrade"}
-    waiting = [item.sta_mac for item in plain.decisions + band.decisions if item.reason not in settled]
+    waiting = [item.sta_mac for item in evaluation.decisions if item.reason not in settled]
     available = all(measurements.status.get(station, {}).get("available") for station in stations)
-    return {**fleet, "policy": "received-scan-band-preference-v1", "band_measurements_complete": available,
+    received_only = {station for station in stations if same_band_received((profiles or {}).get(station))}
+    policy_name = ("received-scan-same-band-v1" if received_only == stations else
+                   "received-scan-mixed-v1" if received_only else "received-scan-band-preference-v1")
+    return {**fleet, "policy": policy_name, "band_measurements_complete": available,
             "clients_outside_policy_margin": len(waiting), "band_unsettled_clients": waiting,
             "converged": fleet["measurement_complete"] and available and not waiting}

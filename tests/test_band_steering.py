@@ -141,3 +141,42 @@ def test_scan_scheduling_yields_to_native_steering_instead_of_interrupting_authe
     executor.submit.assert_not_called()
     collector.schedule()
     assert collector.in_flight(STA)
+
+def test_received_same_band_opt_in_does_not_enable_band_preference_or_matrix_fallback():
+    from optimizer.band_steering import received_scan_enabled
+    settings = {**PROFILE, "profile": {"allowed_bands": ["5"], "initial_band": "5",
+                                     "measurement_mode": "received_same_band"}}
+    assert received_scan_enabled(settings)
+    assert not received_scan_enabled({**settings, "profile": {"allowed_bands": ["5"], "initial_band": "5"}})
+    assert not received_scan_enabled({})
+    policy = ThresholdPolicy(PolicyConfig())
+    first = evaluate_band_clients(policy, sample(current_rcpi=80, target_rcpi=132, target_band="5"),
+                                  None, {STA}, {STA: settings})
+    final = evaluate_band_clients(policy, sample(1, current_rcpi=80, target_rcpi=132, target_band="5"),
+                                  first.state, {STA}, {STA: settings})
+    assert final.decisions[0].action == "steer" and final.decisions[0].target_band == "5"
+    assert not band_policy(policy.config, same_band=True).config.band_upgrade_enabled
+    assert band_policy(policy.config, same_band=True).config.minimum_target_gain_rcpi == policy.config.minimum_target_gain_rcpi
+
+
+def test_received_same_band_hold_requires_new_received_samples():
+    policy = band_policy(PolicyConfig(), same_band=True)
+    first = policy.evaluate(sample(current_rcpi=80, target_rcpi=132, target_band="5"))
+    cached = sample(1, current_rcpi=80, target_rcpi=132, target_band="5", metric_age=1, target_age=1)
+    assert policy.evaluate(cached, first.state).decisions[0].reason == "band_waiting_for_new_scan"
+    mixed = sample(1, current_rcpi=80, target_rcpi=132, target_band="5")
+    mixed = replace(mixed, candidates=tuple(replace(item, measurement_source="hal_matrix") for item in mixed.candidates))
+    assert policy.evaluate(mixed, first.state).decisions[0].reason == "band_measurement_direction_mismatch"
+
+
+def test_missing_serving_sample_fails_closed_even_when_other_bss_was_received():
+    collector, future, _executor = measurements()
+    value = sample(target_band="6")
+    collector.enrich(value, {STA: PROFILE}, "world")
+    collector.schedule()
+    result = scan_result(value)
+    del result["samples"][SOURCE]
+    future.set_result(result)
+    missing = collector.enrich(value, {STA: PROFILE}, "world")
+    assert missing.clients[0].rcpi is None
+    assert not collector.status[STA]["available"]

@@ -15,7 +15,7 @@ class LoadAwarePolicy(ThresholdPolicy):
                     "maximum_report_age_seconds": self.config.load_maximum_age_seconds,
                     "maximum_report_skew_seconds": self.config.load_maximum_report_skew_seconds,
                     "required_hold_seconds": self.config.load_condition_hold_seconds,
-                    "candidate_report_skew_seconds": {}}
+                    "candidate_report_skew_seconds": {}, "candidate_assessments": []}
         hold = lambda reason: {"target": None, "reason": reason, "evidence": evidence}
         loads = {row.bssid: row for row in snapshot.bss_loads
                  if row.source == "native_ap_metrics" and _fresh(
@@ -38,27 +38,54 @@ class LoadAwarePolicy(ThresholdPolicy):
         if activity.packets_per_second < self.config.load_minimum_activity_packets_per_second:
             return hold("native_load_client_idle")
         choices = []
-        for candidate in candidates:
+        raw_loads = {row.bssid: row for row in snapshot.bss_loads}
+        for candidate in sorted(candidates, key=lambda item: item.bssid):
             target = loads.get(candidate.bssid)
+            reasons = []
             if target is not None:
                 evidence["candidate_report_skew_seconds"][candidate.bssid] = abs((
                     parse_time(target.observed_at) - parse_time(current.observed_at)).total_seconds())
-            if (target is None or target.epoch != current.epoch or target.device_id != candidate.device_id
-                    or target.radio_id == current.radio_id or target.backhaul_hops is None
-                    or target.channel == current.channel
-                    or abs((parse_time(target.observed_at) - parse_time(current.observed_at)).total_seconds())
-                    > self.config.load_maximum_report_skew_seconds
-                    or target.backhaul_hops > current.backhaul_hops or candidate.band != client.band
-                    or candidate.rcpi < self.config.load_minimum_target_rcpi
-                    or client.rcpi - candidate.rcpi > self.config.load_maximum_signal_loss_rcpi
-                    or target.utilization > self.config.load_maximum_target_utilization
-                    or current.utilization - target.utilization < self.config.load_minimum_advantage):
+            if target is None:
+                raw = raw_loads.get(candidate.bssid)
+                reasons.append("load_missing" if raw is None else
+                               "load_source_not_native" if raw.source != "native_ap_metrics" else "load_stale")
+            else:
+                checks = (
+                    (target.epoch != current.epoch, "provider_epoch_mismatch"),
+                    (target.device_id != candidate.device_id, "target_identity_mismatch"),
+                    (target.radio_id == current.radio_id, "same_radio"),
+                    (target.channel == current.channel, "same_channel"),
+                    (target.backhaul_hops is None, "backhaul_unknown"),
+                    (target.backhaul_hops is not None and target.backhaul_hops > current.backhaul_hops, "additional_backhaul_hop"),
+                    (evidence["candidate_report_skew_seconds"][candidate.bssid] > self.config.load_maximum_report_skew_seconds, "reports_skewed"),
+                    (target.utilization > self.config.load_maximum_target_utilization, "target_busy"),
+                    (current.utilization - target.utilization < self.config.load_minimum_advantage, "insufficient_load_advantage"),
+                )
+                reasons.extend(reason for rejected, reason in checks if rejected)
+            if candidate.band != client.band:
+                reasons.append("different_band")
+            if candidate.rcpi < self.config.load_minimum_target_rcpi:
+                reasons.append("weak_target_signal")
+            if client.rcpi - candidate.rcpi > self.config.load_maximum_signal_loss_rcpi:
+                reasons.append("excessive_signal_loss")
+            evidence["candidate_assessments"].append({
+                "bssid": candidate.bssid, "radio_id": target.radio_id if target else None,
+                "utilization": target.utilization if target else None,
+                "observed_at": target.observed_at if target else None,
+                "state": "excluded" if reasons else "eligible", "reasons": reasons,
+            })
+            if reasons:
                 continue
             choices.append((target, candidate))
         if not choices:
             return hold("native_load_no_safe_quieter_target")
         target, candidate = min(choices, key=lambda row: (
             row[0].utilization, row[0].backhaul_hops, -row[1].rcpi, row[1].bssid))
+        for assessment in evidence["candidate_assessments"]:
+            if assessment["bssid"] == candidate.bssid:
+                assessment["state"] = "selected"
+            elif assessment["state"] == "eligible":
+                assessment["reasons"] = ["lower_ranked_eligible_target"]
         evidence.update(target_utilization=target.utilization, target_radio=target.radio_id,
                         target_backhaul_hops=target.backhaul_hops, target_epoch=target.epoch,
                         target_observed_at=target.observed_at, target_transport=target.transport)
