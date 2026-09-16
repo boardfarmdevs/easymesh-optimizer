@@ -9,6 +9,7 @@ from typing import Any, Callable, Iterable
 import urllib.error
 import urllib.request
 
+from .collection_timing import timed_call
 from .model import (
     CandidateObservation,
     ClientObservation,
@@ -373,7 +374,9 @@ class ControllerCandidateProvider:
                         transaction["attempt"] = attempt
                     transactions_by_agent[agent].append(transaction)
                     try:
-                        response = self.requester(self.url, payload)
+                        response = timed_call(
+                            transaction, "request_timing", self.requester, self.url, payload
+                        )
                         if self.generation_guard is not None and not self.generation_guard():
                             raise CandidateSnapshotSuperseded("RF changed during candidate request")
                         break

@@ -27,6 +27,14 @@ def block(bssid=CURRENT, frequency="2437", signal="-40.00", seen="100.050", ssid
 """
 
 
+def bss_load(stations=0, utilization=0, admission=0):
+    return f"""\tBSS Load:
+\t\t * station count: {stations}
+\t\t * channel utilisation: {utilization}/255
+\t\t * available admission capacity: {admission} [*32us]
+"""
+
+
 def parsed(raw):
     return parse_scan(raw, frequencies=[2437, 5180, 6135], started_boottime=100, finished_boottime=100.1)
 
@@ -38,6 +46,24 @@ def test_received_scan_preserves_direction_security_and_integer_or_decimal_frequ
     assert samples[TARGET]["frequency_mhz"] == 5180
     assert samples[TARGET]["key_management"] == ["PSK", "SAE"]
     assert samples[TARGET]["pmf_capable"] and samples[TARGET]["pmf_required"]
+    assert samples[TARGET]["advertised_bss_load"] == {"state": "unavailable"}
+
+
+def test_received_scan_preserves_advertised_bss_load_zero_and_nonzero():
+    samples = parsed(block() + bss_load() + block(TARGET) + bss_load(7, 193, 65535))
+    assert samples[CURRENT]["advertised_bss_load"] == {
+        "state": "available", "station_count": 0, "utilization": 0, "admission_capacity": 0}
+    assert samples[TARGET]["advertised_bss_load"] == {
+        "state": "available", "station_count": 7, "utilization": 193, "admission_capacity": 65535}
+
+
+@pytest.mark.parametrize("load", [
+    "\tBSS Load:\n\t\t * station count: 1\n",
+    bss_load(utilization=256), bss_load(stations=65536), bss_load(admission=65536),
+])
+def test_incomplete_or_out_of_range_advertised_bss_load_fails_closed(load):
+    with pytest.raises(ValueError):
+        parsed(block() + load)
 
 
 def test_scan_ignores_unrequested_frequencies_and_stale_cache():
@@ -102,7 +128,9 @@ def scanner(raw=None, after=None, clock_step=0):
     wall = iter([STAMP, STAMP + timedelta(seconds=0.1 + clock_step)])
     native = NativeBandScanner(command, boottime=lambda: next(boot), clock=lambda: next(wall))
     native._scan = Mock(return_value=(raw if raw is not None else block() + block(TARGET, "5180"),
-                                     {"started_boottime": 100, "completed_boottime": 100.1, "scan_id": 1}))
+                                     {"started_boottime": 100, "completed_boottime": 100.1, "scan_id": 1,
+                                      "before": dict(line.split("=", 1) for line in status.splitlines()),
+                                      "after": dict(line.split("=", 1) for line in (after if after is not None else status).splitlines())}))
     return native, commands
 
 
@@ -117,8 +145,20 @@ def test_native_scan_uses_received_timestamps_and_keeps_owner():
     assert result["source"] == "client_nl80211_received_scan"
     assert result["samples"][TARGET]["observed_at"] == "2026-09-13T00:00:00.050Z"
     assert result["elapsed_ms"] == 100
-    assert len(commands) == 2
+    assert not commands
     native._scan.assert_called_once_with("prpl-client-01", STATION, CURRENT, "private_ssid", [2437, 5180])
+
+
+def test_native_scan_batches_status_and_dump_in_one_namespace_worker():
+    import json
+    command = Mock(side_effect=[json.dumps({"pid": 1234}),
+                                json.dumps({"raw_scan": "BSS dump", "scan_id": 7})])
+    native = NativeBandScanner(command)
+    raw, metadata = native._scan("prpl-client-01", STATION, CURRENT, "private_ssid", [2437, 5180])
+    assert raw == "BSS dump" and metadata == {"scan_id": 7}
+    assert command.call_count == 2
+    assert command.call_args_list[0].args == ("lxc", "query", "/1.0/instances/prpl-client-01/state")
+    assert command.call_args_list[1].args[:5] == ("nsenter", "--target", "1234", "--net", "--")
 
 
 @pytest.mark.parametrize("options", [{"after": "wpa_state=DISCONNECTED"}, {"raw": block(TARGET, "5180")},

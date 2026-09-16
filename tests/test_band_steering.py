@@ -18,7 +18,8 @@ PROFILE = {"container": "prpl-client-01", "profile": {"allowed_bands": ["2.4", "
 def received(bssid, band, rcpi, stamp):
     return {"bssid": bssid, "band": band, "frequency_mhz": {"2.4": 2437, "5": 5180, "6": 5975}[band],
             "rcpi": rcpi, "observed_at": stamp, "ssid": "private_ssid", "key_management": ["PSK", "SAE"],
-            "pmf_capable": True, "pmf_required": band == "6"}
+            "pmf_capable": True, "pmf_required": band == "6",
+            "advertised_bss_load": {"state": "unavailable"}}
 
 
 def sample(seconds=0, **kwargs):
@@ -105,6 +106,25 @@ def test_scan_publication_is_nonblocking_and_uses_same_direction_for_serving_and
     assert ready.clients[0].measurement_source == ready.candidates[0].measurement_source == SCAN_SOURCE
     assert collector.selected == {STA} and collector.status[STA]["available"]
     assert executor.submit.call_count == 1
+
+
+@pytest.mark.parametrize("advertised_load", [
+    {"state": "unavailable"},
+    {"state": "available", "station_count": 0, "utilization": 0, "admission_capacity": 0},
+    {"state": "available", "station_count": 12, "utilization": 153, "admission_capacity": 0},
+])
+def test_scan_publication_preserves_advertised_bss_load(advertised_load):
+    collector, future, _executor = measurements()
+    value = sample(target_band="6")
+    collector.enrich(value, {STA: PROFILE}, "world-1")
+    collector.schedule()
+    result = scan_result(value)
+    result["samples"][TARGET]["advertised_bss_load"] = advertised_load
+    future.set_result(result)
+    collector.enrich(value, {STA: PROFILE}, "world-1")
+    target = next(neighbor for neighbor in collector.status[STA]["neighbors"]
+                  if neighbor["bssid"] == TARGET)
+    assert target["advertised_bss_load"] == advertised_load
 
 
 @pytest.mark.parametrize("change", ["world", "association", "stale", "future"])

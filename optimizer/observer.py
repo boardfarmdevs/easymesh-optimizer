@@ -7,6 +7,7 @@ import time
 from typing import Any, Callable, Iterable
 from urllib.request import urlopen
 
+from .collection_timing import timed_call
 from .model import (
     CandidateObservation,
     ClientObservation,
@@ -83,6 +84,7 @@ class ControllerObserver:
         *,
         fetcher: JsonFetcher | None = None,
         candidate_provider: CandidateProvider | None = None,
+        ownership_observer: Callable | None = None,
         current_link_fallback: Callable[[ClientObservation], ClientObservation] | None = None,
         trust_api_metric_timestamp: bool = True,
         max_current_metric_age_seconds: float | None = None,
@@ -94,6 +96,7 @@ class ControllerObserver:
         self.base_url = base_url.rstrip("/")
         self.fetcher = fetcher or _default_fetch
         self.candidate_provider = candidate_provider
+        self.ownership_observer = ownership_observer
         self.current_link_fallback = current_link_fallback
         self.trust_api_metric_timestamp = trust_api_metric_timestamp
         self.max_current_metric_age_seconds = max_current_metric_age_seconds
@@ -198,17 +201,19 @@ class ControllerObserver:
     def observe(self) -> Snapshot:
         started = time.monotonic()
         sample_started_at = format_time(self.clock())
-        topology = self._get("/api/v1/topology")
-        clients_payload = self._get("/api/v1/clients")
-        devices_payload = self._get("/api/v1/devices")
-        bsses_payload = self._get("/api/v1/bsses")
         self.last_raw = {
             "sample_started_at": sample_started_at,
-            "topology": topology,
-            "clients": clients_payload,
-            "devices": devices_payload,
-            "bsses": bsses_payload,
+            "collection_timing_schema": "easymesh.observer.collection.v1",
+            "api_timings": {},
         }
+        for endpoint in ("topology", "clients", "devices", "bsses"):
+            self.last_raw[endpoint] = timed_call(
+                self.last_raw["api_timings"], endpoint, self._get, f"/api/v1/{endpoint}"
+            )
+        topology = self.last_raw["topology"]
+        clients_payload = self.last_raw["clients"]
+        devices_payload = self.last_raw["devices"]
+        bsses_payload = self.last_raw["bsses"]
         context = _topology_client_context(topology)
         devices = devices_payload.get("devices", [])
         device_names = {
@@ -280,6 +285,10 @@ class ControllerObserver:
                     ),
                 )
             )
+        if len({client.sta_mac for client in clients}) != len(clients):
+            raise ValueError("duplicate client ownership")
+        if self.ownership_observer is not None:
+            self.ownership_observer(sorted_clients(clients), self.last_raw)
         normalized_clients = self._refresh_current(clients)
 
         if self.current_metric_floor is not None:

@@ -68,6 +68,22 @@ def parse_scan(text, *, frequencies, started_boottime, finished_boottime):
         if bssid in observed:
             raise ValueError("scan contains a duplicate BSSID")
         security = re.search(r"(?m)^\s+\* Authentication suites: ([^\r\n]+)$", block)
+        load_heading = re.search(r"(?m)^\s+BSS Load:\s*$", block)
+        load_fields = {
+            "station_count": re.search(r"(?m)^\s+\* station count:\s*(\d+)\s*$", block),
+            "utilization": re.search(r"(?m)^\s+\* channel utilisation:\s*(\d+)/255\s*$", block),
+            "admission_capacity": re.search(
+                r"(?m)^\s+\* available admission capacity:\s*(\d+)\s+\[\*32us\]\s*$", block),
+        }
+        if load_heading and not all(load_fields.values()):
+            raise ValueError("scan BSS Load element is incomplete")
+        advertised_load = {"state": "unavailable"}
+        if load_heading:
+            advertised_load = {"state": "available", **{
+                name: int(match[1]) for name, match in load_fields.items()}}
+            if (advertised_load["station_count"] > 65535 or advertised_load["utilization"] > 255
+                    or advertised_load["admission_capacity"] > 65535):
+                raise ValueError("scan BSS Load element is outside its wire range")
         observed[bssid] = {
             "bssid": bssid, "frequency_mhz": frequency_mhz,
             "band": frequency_band(frequency_mhz), "ssid": ssid[1],
@@ -76,6 +92,7 @@ def parse_scan(text, *, frequencies, started_boottime, finished_boottime):
             "key_management": security[1].split() if security else [],
             "pmf_capable": "MFP-capable" in block,
             "pmf_required": "MFP-required" in block,
+            "advertised_bss_load": advertised_load,
         }
     return observed
 
@@ -137,10 +154,6 @@ class NativeBandScanner:
         methods = self.command("lxc", "exec", container, "--", "wpa_cli", "-i", "wlan0", "get_capability", "key_mgmt")
         return parse_capabilities(info, details, methods)
 
-    def _status(self, container):
-        text = self.command("lxc", "exec", container, "--", "wpa_cli", "-i", "wlan0", "status")
-        return dict(line.split("=", 1) for line in text.splitlines() if "=" in line)
-
     def _scan(self, container, sta_mac, bssid, ssid, frequencies):
         state = json.loads(self.command("lxc", "query", f"/1.0/instances/{container}/state"))
         process = state.get("pid")
@@ -149,8 +162,7 @@ class NativeBandScanner:
         worker = str(Path(__file__).with_name("band_scan_worker.py"))
         native = json.loads(self.command("nsenter", "--target", str(process), "--net", "--", sys.executable,
                                          worker, str(process), sta_mac, bssid, ssid, *map(str, frequencies)))
-        raw = self.command("lxc", "exec", container, "--", "iw", "dev", "wlan0", "scan", "dump")
-        return raw, native
+        return native.pop("raw_scan"), native
 
     def collect(self, container, *, sta_mac, bssid, ssid, frequencies, capabilities):
         self._validate_container(container)
@@ -172,20 +184,20 @@ class NativeBandScanner:
             lock.release()
             raise CandidateMetricsUnavailable("client radio is reserved for band settings")
         try:
-            before = self._status(container)
-            if (before.get("address", "").lower() != sta_mac or before.get("bssid", "").lower() != bssid
-                    or before.get("ssid") != ssid or before.get("wpa_state") != "COMPLETED"):
-                raise CandidateMetricsUnavailable("client scan association identity changed")
-            if int(before.get("freq", 0)) not in frequencies:
-                raise ValueError("scan must include the current serving frequency")
             started = self.boottime()
             wall_started = self.clock()
             raw, native = self._scan(container, sta_mac, bssid, ssid, frequencies)
             finished = self.boottime()
             wall_finished = self.clock()
+            before = native["before"]
+            if (before.get("address", "").lower() != sta_mac or before.get("bssid", "").lower() != bssid
+                    or before.get("ssid") != ssid or before.get("wpa_state") != "COMPLETED"):
+                raise CandidateMetricsUnavailable("client scan association identity changed")
+            if int(before.get("freq", 0)) not in frequencies:
+                raise ValueError("scan must include the current serving frequency")
             if abs((wall_finished - wall_started).total_seconds() - (finished - started)) > 0.05:
                 raise CandidateMetricsUnavailable("wall clock changed during client scan")
-            after = self._status(container)
+            after = native["after"]
             if any(before.get(key) != after.get(key) for key in ("address", "bssid", "freq", "ssid", "wpa_state")):
                 raise CandidateMetricsUnavailable("client changed association during scan")
             if not started <= native["started_boottime"] <= native["completed_boottime"] <= finished:

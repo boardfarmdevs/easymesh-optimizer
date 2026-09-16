@@ -75,8 +75,10 @@ class NativeLoadDecoder:
             elif kind == 0xA2:
                 if length != 34:
                     return None
-                sent, received = struct.unpack_from("!II", data, 14)
-                traffic.append({"sta_mac": mac(data[:6]), "packets_sent": sent, "packets_received": received})
+                counters = struct.unpack_from("!IIIIIII", data, 6)
+                traffic.append({"sta_mac": mac(data[:6]),
+                    **dict(zip(("bytes_sent", "bytes_received", "packets_sent", "packets_received",
+                                "tx_packet_errors", "rx_packet_errors", "retransmissions"), counters))})
         return None
 
 

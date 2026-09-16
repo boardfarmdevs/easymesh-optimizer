@@ -88,6 +88,7 @@ def _live_run(args, mode: str, load_provider=None) -> int:
     observer = ControllerObserver(
         args.base_url,
         candidate_provider=candidate_provider,
+        ownership_observer=load_provider.observe_owners if load_provider is not None else None,
         trust_api_metric_timestamp=args.trust_api_metric_timestamp,
     )
     journal = Journal(args.journal)

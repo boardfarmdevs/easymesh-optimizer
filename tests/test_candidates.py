@@ -60,6 +60,32 @@ def test_failed_query_does_not_report_completion():
     assert all(update["completed_queries"] == 0 for update in updates)
 
 
+def test_request_timing_excludes_retry_wait_and_retains_failed_attempt(monkeypatch):
+    from optimizer import collection_timing
+
+    marks = iter({"at": timestamp, "monotonic_ns": timestamp * 1000000}
+                 for timestamp in (1000, 1050, 1300, 1340))
+    monkeypatch.setattr(collection_timing, "timing_mark", lambda: next(marks))
+    delays = []
+    monkeypatch.setattr("optimizer.candidates.time.sleep", delays.append)
+    replies = iter((CandidateMetricsUnavailable("offline"), response()))
+
+    def requester(*arguments):
+        reply = next(replies)
+        if isinstance(reply, Exception):
+            raise reply
+        return reply
+
+    provider = ControllerCandidateProvider("http://controller", allow_simulated=True,
+        requester=requester, request_attempts=2, retry_delay_seconds=0.25)
+    measured = provider((client(),), (inventory(),), bsses(), "2026-08-21T20:00:00Z")
+    assert measured
+    assert delays == [0.25]
+    assert [row["request_timing"]["elapsed_ms"] for row in provider.last_raw] == [50, 40]
+    assert provider.last_raw[0]["request_timing"]["error_type"] == "CandidateMetricsUnavailable"
+    assert "error" not in provider.last_raw[1]["request_timing"]
+
+
 def test_publication_requires_entire_response_validation():
     published = []
     provider = ControllerCandidateProvider("http://controller", allow_simulated=True,
@@ -741,6 +767,10 @@ def test_failed_query_records_agent_radio_and_failed_transaction():
     transaction = dict(provider.last_raw[0])
     assert transaction.pop("elapsed_ms") >= 0
     assert transaction.pop("finished_at") >= transaction.pop("requested_at")
+    timing = transaction.pop("request_timing")
+    assert timing["elapsed_ms"] >= 0
+    assert timing["error"] == "HTTP 504"
+    assert timing["error_type"] == "CandidateMetricsError"
     assert transaction == {
         "request": {
             "AlMac": AGENT,

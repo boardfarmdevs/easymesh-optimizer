@@ -5,7 +5,7 @@ from optimizer.band_scan_worker import coordinated_scan
 
 STATION = "02:00:00:10:01:00"
 BSSID = "02:00:00:00:00:00"
-STATUS = f"address={STATION}\nbssid={BSSID}\nssid=private_ssid\nwpa_state=COMPLETED\n"
+STATUS = f"address={STATION}\nbssid={BSSID}\nfreq=2437\nssid=private_ssid\nwpa_state=COMPLETED\n"
 
 
 class Connection:
@@ -36,6 +36,8 @@ def test_native_scan_only_is_correlated_to_its_completion_and_cannot_select_a_ne
     assert result["scan_id"] == 17 and result["completed_boottime"] == 100.2
     assert connection.sent[2] == "SCAN TYPE=ONLY freq=2437,5180 passive=1 only_new=1 use_id=1"
     assert result["mode"] == "passive"
+    assert result["before"] == result["after"]
+    assert result["before"]["freq"] == "2437"
     assert all(not command.startswith(("ROAM", "REASSOCIATE", "SELECT_NETWORK")) for command in connection.sent)
 
 
@@ -52,3 +54,22 @@ def test_namespace_or_station_identity_mismatch_cannot_trigger_a_scan():
     with pytest.raises(RuntimeError, match="identity changed"):
         collect(connection)
     assert connection.sent == ["ATTACH", "STATUS"]
+
+
+def test_dump_is_bracketed_by_native_identity_checks():
+    connection = Connection(["OK", STATUS, "17", "<3>CTRL-EVENT-SCAN-RESULTS id=17", STATUS])
+    def dump():
+        assert connection.sent[-1].startswith("SCAN ")
+        return "native BSS dump"
+    result = coordinated_scan(connection, STATION, BSSID, "private_ssid", [2437, 5180],
+                              clock=lambda: 0, boottime=lambda: 100, dump=dump)
+    assert result["raw_scan"] == "native BSS dump"
+    assert connection.sent[-1] == "STATUS"
+
+
+def test_serving_frequency_must_be_requested_and_cannot_change_during_scan():
+    with pytest.raises(RuntimeError, match="serving frequency"):
+        collect(Connection(["OK", STATUS.replace("2437", "5975")]))
+    with pytest.raises(RuntimeError, match="changed association"):
+        collect(Connection(["OK", STATUS, "17", "<3>CTRL-EVENT-SCAN-RESULTS id=17",
+                            STATUS.replace("2437", "5180")]))

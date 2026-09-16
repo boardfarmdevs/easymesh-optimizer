@@ -5,12 +5,13 @@ import os
 from pathlib import Path
 import re
 import socket
+import subprocess
 import sys
 import time
 import uuid
 
 
-def coordinated_scan(connection, station, bssid, ssid, frequencies, *, clock=None, boottime=None):
+def coordinated_scan(connection, station, bssid, ssid, frequencies, *, clock=None, boottime=None, dump=None):
     clock = clock or time.monotonic
     boottime = boottime or (lambda: time.clock_gettime(time.CLOCK_BOOTTIME))
     deadline = clock() + 5
@@ -38,10 +39,13 @@ def coordinated_scan(connection, station, bssid, ssid, frequencies, *, clock=Non
         if (status.get("address", "").lower() != station or status.get("bssid", "").lower() != bssid
                 or status.get("ssid") != ssid or status.get("wpa_state") != "COMPLETED"):
             raise RuntimeError("supplicant scan association identity changed")
+        if int(status.get("freq", 0)) not in frequencies:
+            raise RuntimeError("scan must include the current serving frequency")
+        return status
 
     if request("ATTACH") != "OK":
         raise RuntimeError("could not attach to native supplicant events")
-    check_status()
+    before = check_status()
     started = boottime()
     reply = request("SCAN TYPE=ONLY freq=" + ",".join(map(str, frequencies)) + " passive=1 only_new=1 use_id=1")
     if not reply.isdecimal():
@@ -56,9 +60,13 @@ def coordinated_scan(connection, station, bssid, ssid, frequencies, *, clock=Non
         observed = re.search(r"CTRL-EVENT-SCAN-RESULTS\b.*\bid=(\d+)\b", event)
         if observed and int(observed[1]) == scan_id:
             completed = boottime()
-            check_status()
+            raw = dump() if dump is not None else None
+            after = check_status()
+            if any(before.get(key) != after.get(key) for key in ("address", "bssid", "freq", "ssid", "wpa_state")):
+                raise RuntimeError("client changed association during scan")
             return {"scan_id": scan_id, "started_boottime": started, "completed_boottime": completed,
-                    "completion_event": event, "transport": "wpa_control_scan_only_nl80211_dump", "mode": "passive"}
+                    "completion_event": event, "transport": "wpa_control_scan_only_nl80211_dump", "mode": "passive",
+                    "before": before, "after": after, "raw_scan": raw}
     raise RuntimeError("native scan completion was not observed")
 
 
@@ -73,11 +81,17 @@ def main(arguments):
     frequencies = [int(value) for value in frequencies]
     if not 1 <= len(frequencies) <= 16 or any(not 2412 <= value <= 7115 for value in frequencies):
         raise ValueError("invalid native scan frequencies")
+    def dump():
+        return subprocess.run(
+            ["nsenter", "--target", process, "--mount", "--root", "--wd", "--",
+             "iw", "dev", "wlan0", "scan", "dump"],
+            capture_output=True, text=True, check=True, timeout=2).stdout
+
     with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as connection:
         connection.bind("\0lab-band-scan-" + str(os.getpid()) + "-" + uuid.uuid4().hex)
         connection.connect(f"/proc/{process}/root/run/wpa_supplicant/wlan0")
         try:
-            print(json.dumps(coordinated_scan(connection, station, bssid, ssid, frequencies)))
+            print(json.dumps(coordinated_scan(connection, station, bssid, ssid, frequencies, dump=dump)))
         finally:
             try:
                 connection.send(b"DETACH")

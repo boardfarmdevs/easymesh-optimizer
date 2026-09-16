@@ -2,6 +2,7 @@ from dataclasses import replace
 from datetime import timedelta
 import json
 import math
+from pathlib import Path
 import struct
 from types import SimpleNamespace
 
@@ -195,6 +196,9 @@ def test_native_decoder_fragments_units_duplicates_and_malformed_messages():
     report = decoder.feed(frame(payload[9:], fragment=1), 1.1)
     assert report["loads"][0]["utilization"] == 255
     assert report["traffic"][0]["packets_sent"] == 7
+    assert report["traffic"][0] == {"sta_mac": STA, "bytes_sent": 123, "bytes_received": 456,
+        "packets_sent": 7, "packets_received": 8, "tx_packet_errors": 0,
+        "rx_packet_errors": 0, "retransmissions": 0}
     assert decoder.feed(frame(payload[9:], fragment=1), 1.2) is None
     assert decoder.feed(frame(payload[:-2], identifier=2), 2) is None
     assert decoder.feed(frame(payload[:9], last=False, identifier=3), 3) is None
@@ -228,6 +232,74 @@ def test_native_provider_epoch_reset_source_and_context_guards(tmp_path):
                                   "instance_id": "one", "recorded_monotonic_ns": 1800000000}))
     assert provider.enrich(value, raw, now_ns=1800000000).bss_loads == ()
 
+
+def test_native_counter_rates_preserve_units_wrap_and_independent_availability():
+    from optimizer.load_observer import traffic_rates
+    previous = {"packets_sent": 0xfffffffe, "packets_received": 10,
+                "bytes_sent": 1000, "bytes_received": 2000,
+                "tx_packet_errors": 2, "rx_packet_errors": 3, "retransmissions": 4}
+    current = {"packets_sent": 1, "packets_received": 14,
+               "bytes_sent": 3000, "bytes_received": 5000,
+               "tx_packet_errors": 3, "rx_packet_errors": 5, "retransmissions": 10}
+    rates = traffic_rates(current, previous, 2)
+    assert rates["packets_per_second"] == 3.5
+    assert rates["bytes_per_second"] == 2500
+    assert traffic_rates(current, previous, 2, byte_counter_unit_bytes=1024)["bytes_per_second"] == 2560000
+    assert rates["byte_counter_unit_bytes"] == 1
+    assert rates["errors_per_second"] == 1.5
+    assert rates["tx_errors_per_second"] == .5
+    assert rates["rx_errors_per_second"] == 1
+    assert rates["retries_per_second"] == 3
+    reset = {**current, "bytes_sent": 1}
+    rates = traffic_rates(reset, previous, 2)
+    assert rates["packets_per_second"] == 3.5 and rates["bytes_per_second"] is None
+    minimal = {name: current[name] for name in ("packets_sent", "packets_received")}
+    old_minimal = {name: previous[name] for name in ("packets_sent", "packets_received")}
+    rates = traffic_rates(minimal, old_minimal, 2)
+    assert rates["bytes_per_second"] is rates["errors_per_second"] is rates["retries_per_second"] is None
+
+
+def test_native_counter_rate_rejects_unknown_byte_units():
+    from optimizer.load_observer import traffic_rates
+    with pytest.raises(ValueError, match="unsupported byte counter unit"):
+        traffic_rates({"packets_sent": 1, "packets_received": 1},
+                      {"packets_sent": 0, "packets_received": 0}, 1,
+                      byte_counter_unit_bytes=1000)
+
+
+@pytest.mark.parametrize("invalid", [-1, 1 << 32, True, 1.5, None])
+def test_native_counter_rate_rejects_invalid_uint32_without_inventing_zero(invalid):
+    from optimizer.load_observer import traffic_rates
+    old = {"packets_sent": 10, "packets_received": 10, "tx_packet_errors": 0,
+           "rx_packet_errors": 0, "retransmissions": 0}
+    new = {**old, "packets_sent": 20, "rx_packet_errors": invalid}
+    rates = traffic_rates(new, old, 1)
+    assert rates["packets_per_second"] == 10
+    assert rates["rx_errors_per_second"] is None
+    assert rates["errors_per_second"] is None
+    assert rates["tx_errors_per_second"] == rates["retries_per_second"] == 0
+    assert traffic_rates({**new, "packets_sent": invalid}, old, 1) is None
+    assert traffic_rates(old, {**old, "packets_received": invalid}, 1) is None
+
+
+def test_retry_error_wrap_reset_and_direction_are_independent():
+    from optimizer.load_observer import traffic_rates
+    old = {"packets_sent": 10, "packets_received": 20, "retransmissions": 0xfffffffe,
+           "tx_packet_errors": 0xffffffff, "rx_packet_errors": 10}
+    rates = traffic_rates({**old, "retransmissions": 2, "tx_packet_errors": 1,
+                           "rx_packet_errors": 0}, old, 2)
+    assert rates["retries_per_second"] == 2
+    assert rates["tx_errors_per_second"] == 1
+    assert rates["rx_errors_per_second"] is rates["errors_per_second"] is None
+    assert traffic_rates({**old, "packets_sent": 0}, old, 2) is None
+
+
+def test_native_report_observer_is_diagnostic_and_does_not_replace_ingestion():
+    observed = []
+    provider = NativeLoadProvider(provenance_path=Path("/missing"), report_observer=observed.append)
+    provider.report_observer({"kind": "ap_metrics", "source": "test"})
+    assert observed == [{"kind": "ap_metrics", "source": "test"}]
+    assert provider.loads == {} and provider.traffic == {}
 @pytest.mark.parametrize("change,reason", [
     ({"channel": 36}, "same_channel"),
     ({"radio_id": "02:00:00:01:00:00"}, "same_radio"),

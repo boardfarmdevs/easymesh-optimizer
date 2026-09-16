@@ -191,6 +191,11 @@ class ClientActivityObservation:
     epoch: str
     source: str = "native_sta_traffic"
     transport: str = "ieee1905-ethernet"
+    bytes_per_second: float | None = None
+    retries_per_second: float | None = None
+    errors_per_second: float | None = None
+    tx_errors_per_second: float | None = None
+    rx_errors_per_second: float | None = None
 
     def __post_init__(self) -> None:
         normalize_mac(self.sta_mac)
@@ -198,6 +203,11 @@ class ClientActivityObservation:
         parse_time(self.observed_at)
         if not math.isfinite(self.packets_per_second) or self.packets_per_second < 0:
             raise ValueError("invalid native client traffic rate")
+        for name in ("bytes_per_second", "retries_per_second", "errors_per_second",
+                     "tx_errors_per_second", "rx_errors_per_second"):
+            value = getattr(self, name)
+            if value is not None and (not math.isfinite(value) or value < 0):
+                raise ValueError(f"invalid native client {name}")
         if not math.isfinite(self.interval_seconds) or not 0 < self.interval_seconds <= 10:
             raise ValueError("client traffic requires a bounded counter interval")
         if not self.epoch or self.source not in {"native_sta_traffic", "fixture"}:

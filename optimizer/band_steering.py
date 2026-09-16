@@ -171,7 +171,12 @@ class BandSteeringMeasurements:
             self.status[station] = {"source": SOURCE, "available": True, "scan_id": result["scan_id"],
                                     "elapsed_ms": result["elapsed_ms"], "observed_at": current["observed_at"],
                                     "serving_bssid": client.connected_bssid, "rejected": rejected,
-                                    "allowed_bands": profile["profile"]["allowed_bands"]}
+                                    "allowed_bands": profile["profile"]["allowed_bands"],
+                                    "neighbors": [{"bssid": sample["bssid"],
+                                        "frequency_mhz": sample["frequency_mhz"], "rcpi": sample["rcpi"],
+                                        "observed_at": sample["observed_at"],
+                                        "advertised_bss_load": sample["advertised_bss_load"]}
+                                        for sample in result["samples"].values()]}
             self.status[station]["measurement_mode"] = profile["profile"].get("measurement_mode", "received_multiband")
         return replace(snapshot, clients=tuple(clients), candidates=tuple(candidates))
 
