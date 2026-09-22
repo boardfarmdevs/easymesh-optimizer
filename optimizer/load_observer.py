@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import replace
+from dataclasses import asdict, replace
 from datetime import datetime, timezone
 import json
 from pathlib import Path
@@ -10,6 +10,7 @@ import threading
 import time
 
 from .model import BssLoadObservation, ClientActivityObservation, format_time
+from .rf_observations import frequency_for, observation_envelope
 
 
 TRAFFIC_COUNTERS = ("bytes_sent", "bytes_received", "packets_sent", "packets_received",
@@ -77,7 +78,8 @@ def inventory(raw):
             for radio in device.get("radios", []):
                 for bss in radio.get("bsses", []):
                     bsses[bss["bssid"].lower()] = {"device_id": identity, "radio_id": radio["id"],
-                                                  "channel": radio.get("channel"), "ssid": bss.get("ssid")}
+                                                  "channel": radio.get("channel"), "band": radio.get("band"),
+                                                  "width_mhz": radio.get("width_mhz"), "ssid": bss.get("ssid")}
     hops = {identity: 0 for identity in roots}
     for _iteration in range(len(parents)):
         for child, (parent, cost) in parents.items():
@@ -116,6 +118,13 @@ class NativeLoadProvider:
         self.child = None
         self.threads = []
         self.ready = threading.Event()
+        self.inspection_clients = ()
+        self.inspection_inventory = {}
+        self.inspection_contexts = {}
+        self.inspection_hops = {}
+        self.inspection_at_ns = 0
+        self.inspection_epoch = None
+        self.inspection_floor_ns = 0
         self.report_observer = report_observer
         if controller is not None:
             state = json.loads(subprocess.check_output(
@@ -199,9 +208,19 @@ class NativeLoadProvider:
             raise ValueError("duplicate client ownership")
         now_ns = time.monotonic_ns() if now_ns is None else now_ns
         epoch = provenance(self.provenance_path, now_ns)
-        bsses, _hops = inventory(raw)
+        bsses, hops = inventory(raw)
         with self.lock:
             resets = self._observe_owners_locked(clients, bsses, epoch, now_ns, complete=True)
+            self.inspection_clients = clients
+            self.inspection_inventory = {key: dict(value) for key, value in bsses.items()}
+            contexts = {}
+            for bssid, value in bsses.items():
+                identity = (epoch, value.get("device_id"), value.get("radio_id"), value.get("channel"), value.get("band"))
+                prior = self.inspection_contexts.get(bssid)
+                contexts[bssid] = (identity, prior[1] if prior and prior[0] == identity else now_ns)
+            self.inspection_contexts = contexts
+            self.inspection_hops = dict(hops)
+            self.inspection_at_ns = now_ns
         raw["load_collection"] = {
             "schema": "easymesh.load.collection.v1", "sampled_monotonic_ns": now_ns,
             "epoch": epoch, "owner_resets": resets,
@@ -257,7 +276,6 @@ class NativeLoadProvider:
         snapshot = replace(snapshot, observed_at=observed_at)
         epoch = provenance(self.provenance_path, now_ns)
         bsses, hops = inventory(raw)
-        loads, activity = [], []
         collection = raw.get("load_collection")
         if collection is None or "enriched_monotonic_ns" in collection or collection["epoch"] != epoch:
             collection = raw["load_collection"] = {
@@ -270,35 +288,92 @@ class NativeLoadProvider:
                 self._observe_owners_locked(snapshot.clients, bsses, epoch, now_ns))
             if epoch is None or self.error or (self.child is not None and self.child.poll() is not None):
                 return replace(snapshot, schema_version=2, bss_loads=(), client_activity=())
-            for bssid, (identity, floor) in self.contexts.items():
-                row = self.loads.get((identity[0], bssid))
-                if row is None or row["monotonic_ns"] < floor or not 0 <= now_ns - row["monotonic_ns"] <= 5000000000:
-                    continue
-                timestamp = format_time(datetime.fromtimestamp(row["received_at"], timezone.utc))
-                loads.append(BssLoadObservation(bssid, identity[0], identity[1], identity[2],
-                    row["utilization"], row["station_count"], timestamp, epoch, hops.get(identity[0]),
-                    transport=row["transport"]))
-            available = {row.bssid: row for row in loads}
-            for client in snapshot.clients:
-                owner = self.client_owners.get(client.sta_mac)
-                row = self.traffic.get((client.connected_device_id, client.sta_mac))
-                load = available.get(client.connected_bssid)
-                if (owner is None or owner[0] != (client.connected_device_id, client.connected_bssid)
-                        or load is None or row is None or row["rates"] is None
-                        or row["transport"] != load.transport
-                        or row["interval_started_monotonic_ns"] <= self.contexts[client.connected_bssid][1]
-                        or row["interval_started_monotonic_ns"] <= owner[1]
+            loads, activity = self._observations_locked(snapshot.clients, hops, epoch, now_ns)
+        return replace(snapshot, schema_version=2, bss_loads=tuple(loads), client_activity=tuple(activity))
+
+    def _observations_locked(self, clients, hops, epoch, now_ns):
+        loads, activity = [], []
+        for bssid, (identity, floor) in self.contexts.items():
+            row = self.loads.get((identity[0], bssid))
+            if row is None or row["monotonic_ns"] < floor or not 0 <= now_ns - row["monotonic_ns"] <= 5000000000:
+                continue
+            timestamp = format_time(datetime.fromtimestamp(row["received_at"], timezone.utc))
+            loads.append(BssLoadObservation(bssid, identity[0], identity[1], identity[2],
+                row["utilization"], row["station_count"], timestamp, epoch, hops.get(identity[0]),
+                transport=row["transport"]))
+        available = {row.bssid: row for row in loads}
+        for client in clients:
+            owner = self.client_owners.get(client.sta_mac)
+            row = self.traffic.get((client.connected_device_id, client.sta_mac))
+            load = available.get(client.connected_bssid)
+            if (owner is None or owner[0] != (client.connected_device_id, client.connected_bssid)
+                    or load is None or row is None or row["rates"] is None
+                    or row["transport"] != load.transport
+                    or row["interval_started_monotonic_ns"] <= self.contexts[client.connected_bssid][1]
+                    or row["interval_started_monotonic_ns"] <= owner[1]
+                    or not 0 <= now_ns - row["monotonic_ns"] <= 5000000000):
+                continue
+            timestamp = format_time(datetime.fromtimestamp(row["received_at"], timezone.utc))
+            activity.append(ClientActivityObservation(client.sta_mac, client.connected_bssid,
+                row["rates"]["packets_per_second"], row["interval"], timestamp, epoch,
+                transport=row["transport"], bytes_per_second=row["rates"]["bytes_per_second"],
+                retries_per_second=row["rates"]["retries_per_second"],
+                errors_per_second=row["rates"]["errors_per_second"],
+                tx_errors_per_second=row["rates"]["tx_errors_per_second"],
+                rx_errors_per_second=row["rates"]["rx_errors_per_second"]))
+        return loads, activity
+
+    def inspection(self, *, now_ns=None, now=None, include_envelope=True):
+        now_ns = time.monotonic_ns() if now_ns is None else now_ns
+        epoch = provenance(self.provenance_path, now_ns)
+        with self.lock:
+            error = self.error
+            if self.child is not None and self.child.poll() is not None:
+                error = error or "native load receiver closed"
+            if epoch != self.inspection_epoch:
+                self.inspection_epoch = epoch
+                self.inspection_floor_ns = self.floor_ns if epoch == self.epoch else now_ns
+            if epoch is None:
+                error = error or "native provider epoch unavailable"
+            inventory_age = (now_ns - self.inspection_at_ns) / 1e9 if self.inspection_at_ns else None
+            context_fresh = epoch == self.epoch and inventory_age is not None and 0 <= inventory_age <= 5
+            context = {key: dict(value) for key, value in self.inspection_inventory.items()} if context_fresh else {}
+            joined, activity = self._observations_locked(self.inspection_clients, self.inspection_hops, epoch, now_ns) if not error and context_fresh else ([], [])
+            verified = {row.bssid: asdict(row) for row in joined}
+            loads = []
+            for (device, bssid), row in self.loads.items() if not error else ():
+                if (row["monotonic_ns"] < self.inspection_floor_ns
                         or not 0 <= now_ns - row["monotonic_ns"] <= 5000000000):
                     continue
-                timestamp = format_time(datetime.fromtimestamp(row["received_at"], timezone.utc))
-                activity.append(ClientActivityObservation(client.sta_mac, client.connected_bssid,
-                    row["rates"]["packets_per_second"], row["interval"], timestamp, epoch,
-                    transport=row["transport"], bytes_per_second=row["rates"]["bytes_per_second"],
-                    retries_per_second=row["rates"]["retries_per_second"],
-                    errors_per_second=row["rates"]["errors_per_second"],
-                    tx_errors_per_second=row["rates"]["tx_errors_per_second"],
-                    rx_errors_per_second=row["rates"]["rx_errors_per_second"]))
-        return replace(snapshot, schema_version=2, bss_loads=tuple(loads), client_activity=tuple(activity))
+                load = verified.get(bssid)
+                if load is None or load["device_id"] != device:
+                    load = {"bssid": bssid, "device_id": device, "radio_id": None, "channel": None,
+                            "utilization": row["utilization"], "station_count": row["station_count"],
+                            "observed_at": format_time(datetime.fromtimestamp(row["received_at"], timezone.utc)),
+                            "epoch": epoch, "source": "native_ap_metrics", "transport": row["transport"],
+                            "backhaul_hops": None, "context_state": "unverified"}
+                else:
+                    load["context_state"] = "verified"
+                candidate = context.get(bssid, {})
+                observed_context = self.inspection_contexts.get(bssid)
+                if (load["context_state"] == "unverified" and observed_context
+                        and row["monotonic_ns"] > observed_context[1]
+                        and candidate.get("device_id") == device
+                        and candidate.get("radio_id") and candidate.get("channel")):
+                    load.update(radio_id=candidate["radio_id"], channel=candidate["channel"], context_state="verified")
+                load["band"] = context.get(bssid, {}).get("band") if load["context_state"] == "verified" else None
+                load["frequency_mhz"] = frequency_for(load["band"], load["channel"])
+                loads.append(load)
+        now = now or datetime.now(timezone.utc)
+        inspection = {"schema": "easymesh.rf-inspection.v2", "enabled": True, "error": error,
+                "maximum_age_seconds": 5, "inventory_age_seconds": inventory_age,
+                "context_state": "verified" if context_fresh else "unverified",
+                "context_note": "Unjoined native reports remain BSSID/device facts; radio/channel and client ownership require fresh inventory.",
+                "published_at": format_time(now),
+                "bss_loads": loads, "client_activity": [asdict(row) for row in activity]}
+        if include_envelope:
+            inspection["observations"] = observation_envelope(loads, activity, inventory=context, now=now, error=error)
+        return inspection
 
     def close(self):
         if self.child is not None:

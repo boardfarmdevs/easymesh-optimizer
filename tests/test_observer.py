@@ -338,7 +338,10 @@ def test_controller_inventory_keeps_cross_band_bssid_candidates():
             {"bssid": "02:00:00:cc:cc:01", "device_id": "02:00:00:00:09:20",
              "radio_id": "02:00:00:00:09:00", "band": 3, "channel": 37,
              "ssid": "private_ssid", "haul_type": "Fronthaul"},
-        ], "total": 3},
+            {"bssid": "02:00:00:dd:dd:01", "device_id": "02:00:00:00:09:20",
+             "radio_id": "02:00:00:00:09:00", "band": 1, "channel": 36,
+             "ssid": "mesh_backhaul", "haul_type": "Backhaul"},
+        ], "total": 4},
     }
     observer = ControllerObserver(
         "http://controller",

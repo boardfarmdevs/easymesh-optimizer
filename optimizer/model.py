@@ -247,6 +247,10 @@ class Snapshot:
         sta_mac = normalize_mac(sta_mac)
         return next((item for item in self.clients if item.sta_mac == sta_mac), None)
 
+    def rf_observations(self) -> dict[str, Any]:
+        from .rf_observations import observation_envelope
+        return observation_envelope(self.bss_loads, self.client_activity, now=parse_time(self.observed_at))
+
     def candidates_for(self, sta_mac: str) -> tuple[CandidateObservation, ...]:
         sta_mac = normalize_mac(sta_mac)
         return tuple(item for item in self.candidates if item.sta_mac == sta_mac)
