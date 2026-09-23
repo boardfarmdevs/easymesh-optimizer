@@ -1,0 +1,131 @@
+{
+  "schema": "optimizer.scenario-catalog.v1",
+  "scenarios": [
+    {
+      "id": "cartesian-home",
+      "class": "benchmark-matrix",
+      "description": "The reusable RF M by traffic N core across every checked-in home world.",
+      "world_tags_all": ["home"],
+      "traffic_profiles": ["idle-keepalive", "latency-probe", "constant-load", "bursty-apps", "traffic-flash-crowd"],
+      "requirements": ["rf-atomic-generations", "current-link-metrics"],
+      "expected_behavior": ["preserve every RF and traffic axis", "never feed world truth into policy"]
+    },
+    {
+      "id": "slow-walk-steering",
+      "class": "client-steering",
+      "description": "Ten clients cross several candidate cells slowly.",
+      "world_tags_all": ["slow-walk"],
+      "traffic_profiles": ["latency-probe", "constant-load"],
+      "requirements": ["same-band-candidate-link-metrics", "measurement-receipt-time", "btm-steering", "association-verification"],
+      "expected_behavior": ["bounded moves after hold and margin", "no ping-pong"]
+    },
+    {
+      "id": "border-hysteresis",
+      "class": "client-steering",
+      "description": "Clients repeatedly cross wall and cell borders near policy thresholds.",
+      "world_tags_all": ["border-hover"],
+      "traffic_profiles": ["latency-probe"],
+      "requirements": ["same-band-candidate-link-metrics", "measurement-receipt-time", "btm-steering"],
+      "expected_behavior": ["hysteresis suppresses repeated steering", "short wall jumps do not cause oscillation"]
+    },
+    {
+      "id": "fast-transit",
+      "class": "client-steering",
+      "description": "The candidate opportunity may be shorter than roam cost.",
+      "world_tags_all": ["fast-transit"],
+      "traffic_profiles": ["latency-probe"],
+      "requirements": ["same-band-candidate-link-metrics", "measurement-receipt-time", "btm-steering"],
+      "expected_behavior": ["abstain when expected benefit horizon is too short"]
+    },
+    {
+      "id": "asymmetric-link",
+      "class": "client-steering",
+      "description": "Station-originated signal is weaker than AP-originated signal.",
+      "world_tags_all": ["asymmetric"],
+      "traffic_profiles": ["latency-probe"],
+      "requirements": ["same-band-candidate-link-metrics", "measurement-receipt-time"],
+      "expected_behavior": ["do not silently treat uplink and downlink as the same fact"]
+    },
+    {
+      "id": "flash-crowd-load",
+      "class": "load-steering",
+      "description": "Ten clients and their traffic appear together.",
+      "world_tags_all": ["flash-crowd"],
+      "traffic_profiles": ["traffic-flash-crowd"],
+      "requirements": ["same-band-candidate-link-metrics", "measurement-receipt-time", "ap-load-metrics", "btm-steering"],
+      "expected_behavior": ["serialize moves", "avoid moving the cohort onto one target"]
+    },
+    {
+      "id": "client-disappearance",
+      "class": "liveness",
+      "description": "Clients disappear and later reappear without an optimizer action.",
+      "world_tags_all": ["disappearance"],
+      "traffic_profiles": ["latency-probe"],
+      "requirements": ["current-link-metrics"],
+      "expected_behavior": ["expire stale policy state", "treat reappearance as fresh association"]
+    },
+    {
+      "id": "extender-loss-recovery",
+      "class": "resilience",
+      "description": "One extender is RF-isolated and then restored.",
+      "world_tags_all": ["extender-loss"],
+      "traffic_profiles": ["latency-probe"],
+      "requirements": ["extender-rf-isolation", "association-verification"],
+      "expected_behavior": ["clients recover", "expired extender returns with the same identity"]
+    },
+    {
+      "id": "band-steer-24-to-5",
+      "class": "band-steering",
+      "description": "Compare same-mesh 2.4 and 5 GHz candidates before a BTM action.",
+      "world_tags_all": ["slow-walk"],
+      "traffic_profiles": ["latency-probe"],
+      "requirements": ["frequency-qualified-snr", "band-candidate-inventory", "cross-band-candidate-link-metrics", "measurement-receipt-time", "btm-steering"],
+      "expected_behavior": ["choose a BSSID, not merely a band", "retain 2.4 GHz when 5 GHz benefit is insufficient"]
+    },
+    {
+      "id": "band-steer-5-to-6",
+      "class": "band-steering",
+      "description": "Compare same-mesh 5 and 6 GHz candidates under shorter 6 GHz reach.",
+      "world_tags_all": ["slow-walk"],
+      "traffic_profiles": ["latency-probe"],
+      "requirements": ["frequency-qualified-snr", "band-candidate-inventory", "cross-band-candidate-link-metrics", "measurement-receipt-time", "btm-steering"],
+      "expected_behavior": ["prefer 6 GHz only while measured benefit and persistence justify it"]
+    },
+    {
+      "id": "preassociation-band-preference",
+      "class": "preassociation-steering",
+      "description": "Suppress selected 2.4 GHz probe responses to influence initial association.",
+      "world_tags_all": ["stationary"],
+      "traffic_profiles": ["idle-keepalive"],
+      "requirements": ["preassociation-probe-control", "band-candidate-inventory"],
+      "expected_behavior": ["bounded suppression", "failsafe association remains possible"]
+    },
+    {
+      "id": "btm-no-disconnect",
+      "class": "client-response",
+      "description": "A controllable client ignores a valid BTM request without disconnecting.",
+      "world_tags_all": ["stationary"],
+      "traffic_profiles": ["latency-probe"],
+      "requirements": ["controlled-btm-response", "btm-steering", "association-verification"],
+      "expected_behavior": ["record no-change as an outcome", "apply failure backoff without blind retry"]
+    },
+    {
+      "id": "backhaul-topology-band",
+      "class": "backhaul-optimization",
+      "description": "Select weighted graph edges and bands using backhaul quality and congestion.",
+      "world_tags_all": ["slow-walk"],
+      "traffic_profiles": ["constant-load"],
+      "requirements": ["frequency-qualified-snr", "backhaul-link-metrics", "backhaul-band-control", "ap-load-metrics"],
+      "expected_behavior": ["prefer 5 or 6 GHz when viable", "use 2.4 GHz only as an explicit failsafe", "avoid loops and partitions"]
+    },
+    {
+      "id": "location-channel-width",
+      "class": "radio-configuration",
+      "description": "Evaluate location-specific 20/40/80/160 MHz choices.",
+      "world_tags_all": ["stationary"],
+      "traffic_profiles": ["constant-load"],
+      "requirements": ["channel-width-control", "ap-load-metrics", "traffic-iperf3"],
+      "expected_behavior": ["measure interference and throughput", "do not infer wide-channel gain from an hwsim 20 MHz clamp"]
+    }
+  ]
+}

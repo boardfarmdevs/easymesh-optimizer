@@ -1,0 +1,20 @@
+# Conservative external BSSID policy for 2.4 -> 5 -> 6 GHz upgrades.
+# This is not an EasyMesh Policy Configuration TLV.
+policy_version: 1
+decision_interval_seconds: 1
+current_rcpi_below: 100
+minimum_target_gain_rcpi: 16
+condition_hold_seconds: 5
+minimum_dwell_seconds: 20
+steer_timeout_seconds: 10
+post_steer_cooldown_seconds: 30
+failure_backoff_seconds: 60
+maximum_failure_backoff_seconds: 600
+# The 20-client live lab currently needs roughly 30-40 seconds to collect the
+# complete standards-facing candidate snapshot through serialized libemcli.
+reject_stale_metrics_after_seconds: 60
+band_upgrade_enabled: true
+minimum_band_upgrade_target_rcpi: 120
+maximum_band_upgrade_loss_rcpi: 8
+expected_devices: 5
+expected_clients: 20
