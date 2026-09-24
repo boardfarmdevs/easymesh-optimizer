@@ -49,11 +49,28 @@ def test_busy_admission_respects_superseding_world():
         list(provider((client(),), (inventory(),), bsses(), "2026-08-21T20:00:01.000Z"))
 
 
-def test_transport_classifies_only_explicit_busy_rejection(monkeypatch):
+@pytest.mark.parametrize('reason', ['Error_Prev_Cmd_In_Progress', 'Error_Not_Ready'])
+def test_transport_classifies_only_explicit_busy_rejection(monkeypatch, reason):
     error = urllib.error.HTTPError("http://controller", 503, "busy", {},
-        BytesIO(json.dumps({"message": "native candidate command not accepted: Error_Prev_Cmd_In_Progress"}).encode()))
+        BytesIO(json.dumps({"message": "native candidate command not accepted: " + reason}).encode()))
     def fail(*args, **kwargs):
         raise error
     monkeypatch.setattr("urllib.request.urlopen", fail)
     with pytest.raises(CandidateMetricsBusy):
         _default_request("http://controller", {})
+
+
+@pytest.mark.parametrize('status, detail', [
+    (503, {'message': 'native response omitted required measurements', 'native_completed': True}),
+    (503, {'message': 'service unavailable'}),
+    (504, {'message': 'Error_Not_Ready'}),
+])
+def test_other_errors_do_not_become_safe_admission_retries(monkeypatch, status, detail):
+    error = urllib.error.HTTPError('http://controller', status, 'unavailable', {},
+        BytesIO(json.dumps(detail).encode()))
+    def fail(*args, **kwargs):
+        raise error
+    monkeypatch.setattr('urllib.request.urlopen', fail)
+    with pytest.raises(CandidateMetricsError) as caught:
+        _default_request('http://controller', {})
+    assert not isinstance(caught.value, CandidateMetricsBusy)
