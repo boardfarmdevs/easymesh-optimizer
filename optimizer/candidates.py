@@ -30,10 +30,11 @@ ClientSelector = Callable[[ClientObservation, str], bool]
 # replaces it with channels derived from the live compiled radio inventory.
 LAB_CONTROL_CHANNELS = {"2.4": 6, "5": 36, "6": 1}
 
-# The unified-wifi-mesh data model stores at most EM_MAX_UNASSOC_STA (eight)
-# response entries.  Sending a larger request makes the current Agent omit a
-# correlated response, so keep every transaction within that real boundary.
-MAX_UNASSOC_STAS_PER_QUERY = 8
+# The unified-wifi-mesh data model stores at most EM_MAX_UNASSOC_STA (64)
+# response entries, and OneWifi measures as many stations per channel in one
+# query (ccsp-one-wifi 0040; before it, eight).  Sending a larger request makes
+# the Agent omit a correlated response, so keep every transaction within that.
+MAX_UNASSOC_STAS_PER_QUERY = 64
 
 # The HTTP adapter serializes every native libemcli call.  Agent protocol
 # transactions are independent, but concurrent HTTP handlers still contend on
@@ -295,7 +296,7 @@ class ControllerCandidateProvider:
 
         # Each Agent owns an independent unassociated-STA response table and
         # EasyMesh command path.  Keep batches for one Agent sequential so a
-        # later response cannot replace the previous eight-entry table before
+        # later response cannot replace the previous response table before
         # it is consumed.  The current HTTP adapter also serializes native
         # libemcli execution globally, so the release default runs Agents one
         # at a time instead of creating competing polling handlers.

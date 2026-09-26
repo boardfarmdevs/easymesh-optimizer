@@ -742,10 +742,10 @@ def test_default_serializes_agents_for_the_native_cli_adapter():
     assert [item.bssid for item in measured] == [BSSID, second_bssid]
 
 
-def test_provider_splits_requests_at_controller_eight_sta_limit():
+def test_provider_splits_requests_at_the_per_query_station_limit():
     clients = []
     candidates = []
-    for index in range(9):
+    for index in range(65):
         station = f"02:00:00:00:{index + 16:02x}:00"
         clients.append(replace(client(), sta_mac=station))
         candidates.append(replace(inventory(), sta_mac=station))
@@ -782,15 +782,15 @@ def test_provider_splits_requests_at_controller_eight_sta_limit():
         )
         for call in calls
     ]
-    assert batch_sizes == [8, 1]
-    assert len(measured) == 9
+    assert batch_sizes == [64, 1]
+    assert len(measured) == 65
 
 
 def test_serial_native_batches_interleave_agents_before_the_next_cohort():
     second_agent = "02:00:00:00:0a:20"
     second_radio = "02:00:00:00:0a:00"
     second_bssid = "02:00:00:aa:aa:02"
-    clients = [replace(client(), sta_mac=f"02:00:00:00:{index + 16:02x}:00") for index in range(9)]
+    clients = [replace(client(), sta_mac=f"02:00:00:00:{index + 16:02x}:00") for index in range(65)]
     candidates = [replace(inventory(), sta_mac=station.sta_mac, device_id=agent, bssid=bssid)
                   for station in clients for agent, bssid in ((AGENT, BSSID), (second_agent, second_bssid))]
     raw = bsses() + [{**bsses()[0], "device_id": second_agent,
@@ -800,7 +800,7 @@ def test_serial_native_batches_interleave_agents_before_the_next_cohort():
     def request(_url, payload):
         agent = payload["AlMac"]
         stations = payload["UnassocStaQueryList"][0]["channels"][0]["sta_macs"]
-        assert len(stations) <= 8
+        assert len(stations) <= 64
         calls.append(agent)
         result = response()
         result["metrics"] = [{**result["metrics"][0], "agent_al": agent,
@@ -812,8 +812,8 @@ def test_serial_native_batches_interleave_agents_before_the_next_cohort():
                                           result_ready=lambda measured, *_args: published.append((len(calls), len(measured))))
     measured = provider(tuple(clients), tuple(candidates), raw, "2026-08-21T20:00:01.000Z")
     assert calls == [AGENT, second_agent, AGENT, second_agent]
-    assert published == [(1, 8), (2, 8), (3, 1), (4, 1)]
-    assert len(measured) == 18
+    assert published == [(1, 64), (2, 64), (3, 1), (4, 1)]
+    assert len(measured) == 130
 
 
 def test_cross_band_inventory_is_not_misreported_as_candidate_measurement():
