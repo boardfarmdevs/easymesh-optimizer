@@ -385,6 +385,20 @@ class InteractiveMediumSessionTests(unittest.TestCase):
         self.assertEqual(backhaul[0]["peer_role"], "gateway")
         self.assertEqual(backhaul[0]["band"], "5")
 
+    def test_a_wired_extender_moves_without_backhaul_rf(self):
+        # its Wi-Fi backhaul station must never hear another AP: no mesh-peer keys at all
+        wired = patch.dict(self.session.world, {"wired_backhaul": ["extender_1"]})
+        wired.start()
+        self.addCleanup(wired.stop)
+        result = self.session.position(
+            "extender_1", token=self.lease["token"], expected_revision=0,
+            position=[8, 4], final=True,
+        )
+        self.assertEqual({item["link_class"] for item in result["links"]}, {"fronthaul"})
+        gateway = PLAN["bindings"]["gateway"]["band_radios"]["5"]["tx_mac"]
+        self.assertFalse([item for item in self.client.applied[-1]
+                          if gateway in (item["source"], item["destination"])])
+
     def test_colocated_gateway_agent_is_movable_but_cannot_disappear(self):
         initial_generation = self.client.generation
         result = self.session.position(

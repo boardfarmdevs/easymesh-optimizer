@@ -349,4 +349,8 @@ def test_rdk_backhaul_adapter_leaves_adapter_pods_out():
                          "fronthaul_frequencies_mhz": {"2.4": 2437}}
     adapter = RdkBackhaulAdapter({"bindings": bindings})
     assert adapter.containers == lab
+    # an extender on a wired backhaul has no OneWifi backhaul to steer either
+    bindings["extender_5"] = {"role_type": "fronthaul_ap", "container": "bpiap-004", "backhaul": "wired",
+                              "fronthaul_frequencies_mhz": {"2.4": 2437, "5": 5180, "6": 5975}}
+    assert RdkBackhaulAdapter({"bindings": bindings}).containers == lab
 
