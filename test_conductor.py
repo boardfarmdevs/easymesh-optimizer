@@ -1068,6 +1068,32 @@ class ConductorProjectionTests(unittest.TestCase):
             "signal": {"status": "fresh", "rcpi": 138, "rssi_dbm": -41},
         }])
 
+    def test_an_ap_on_a_wired_backhaul_is_an_ethernet_child_of_the_gateway(self):
+        conductor, _store = self._conductor()
+        topology = {
+            "nodes": [
+                # the logical controller: no BSS, no room object
+                {"id": "00:60:2f:00:00:d4", "name": "Controller", "backhaulMedia": "Ethernet", "haulTypes": []},
+                {"id": "02:00:00:00:10:20", "name": "Agent-1", "backhaulMedia": "Ethernet",
+                 "haulTypes": [{"BSSList": [{"BSSID": "02:00:00:00:01:01"}]}]},
+                {"id": "02:00:00:00:6f:20", "name": "Extender-1", "backhaulMedia": "Ethernet",
+                 "upstreamBSSID": "00:00:00:00:00:00",
+                 "haulTypes": [{"BSSList": [{"BSSID": "02:00:00:00:04:01", "vapMode": 0}]}]},
+            ],
+            "edges": [
+                {"from": "00:60:2f:00:00:d4", "to": "02:00:00:00:10:20", "mediaType": "Ethernet", "band": -1},
+                {"from": "00:60:2f:00:00:d4", "to": "02:00:00:00:6f:20", "mediaType": "Ethernet", "band": -1},
+            ],
+        }
+
+        mesh = conductor._topology_payload(topology)
+
+        self.assertEqual(mesh["backhaul_edges"], [])
+        self.assertEqual(mesh["unresolved_edges"], 0)
+        self.assertEqual(mesh["wired_edges"], [
+            {"parent_role": "gateway", "child_role": "extender_1", "media_type": "Ethernet"},
+        ])
+
 
 if __name__ == "__main__":
     unittest.main()

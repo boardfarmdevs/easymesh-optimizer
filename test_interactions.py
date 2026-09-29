@@ -399,6 +399,21 @@ class InteractiveMediumSessionTests(unittest.TestCase):
         self.assertFalse([item for item in self.client.applied[-1]
                           if gateway in (item["source"], item["destination"])])
 
+    def test_a_guarded_wired_extender_moves_with_backhaul_rf_like_any_ap(self):
+        # its HAL never connects its backhaul station (wired_guard): it may be a parent
+        wired = patch.dict(self.session.world, {"wired_backhaul": ["extender_1"]})
+        wired.start()
+        self.addCleanup(wired.stop)
+        guard = patch.dict(self.session.plan["bindings"]["extender_1"], {"wired_guard": "hal"})
+        guard.start()
+        self.addCleanup(guard.stop)
+        result = self.session.position(
+            "extender_1", token=self.lease["token"], expected_revision=0,
+            position=[8, 4], final=True,
+        )
+        self.assertEqual({item["link_class"] for item in result["links"]}, {"fronthaul", "backhaul"})
+        self.assertIn("gateway", {item["peer_role"] for item in result["links"] if item["link_class"] == "backhaul"})
+
     def test_colocated_gateway_agent_is_movable_but_cannot_disappear(self):
         initial_generation = self.client.generation
         result = self.session.position(
