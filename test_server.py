@@ -223,7 +223,7 @@ class ServerTests(unittest.TestCase):
             self.assertIn(b"viewer", response.read())
 
     def test_viewer_defaults_are_host_specific_without_changing_static_files(self):
-        viewer_root = Path(__file__).resolve().parents[3] / "gen/wmediumd/configurator/worlds/viewer"
+        viewer_root = Path(__file__).resolve().parents[3] / "gen/medium/configurator/worlds/viewer"
         original = (viewer_root / "index.html").read_bytes()
         self.assertIn(b'<meta name="room-viewer-mode" content="no-connect">', original)
         for interactions, replay, expected in [

@@ -11,7 +11,7 @@ from wmdcfg.world import compile_world, verify_world_plan
 
 
 ROOT = Path(__file__).resolve().parents[3]
-WORLDS = ROOT / "gen/wmediumd/configurator/worlds"
+WORLDS = ROOT / "gen/medium/configurator/worlds"
 NEW_ROOMS = ("rf-packet-size-counters", "rf-asymmetric-ack")
 
 
@@ -34,7 +34,7 @@ def read(relative):
 
 def test_every_property_has_named_rooms_and_an_explicit_check_in_maintained_docs():
     assert set(DEMONSTRATIONS) == set(DEFINITIONS)
-    document = (ROOT / "doc/easymesh/reference/radio/rf-property-coverage.md").read_text()
+    document = (ROOT / "gen/medium/docs/reference/rf-property-coverage.md").read_text()
     for row in property_catalog()["properties"]:
         demo = row["demonstration"]
         assert demo["check"] and demo["expectation"] and demo["rooms"]

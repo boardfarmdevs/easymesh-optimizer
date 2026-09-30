@@ -31,7 +31,7 @@ def test_centered_gateway_stays_star():
 
 
 def canonical_strengths(layout_name="home-five-agent", positions=None):
-    root = Path(__file__).resolve().parents[2] / "wmediumd/configurator/worlds/layouts"
+    root = Path(__file__).resolve().parents[2] / "medium/configurator/worlds/layouts"
     layout = json.loads((root / (layout_name + ".json")).read_text())
     nodes = [node for node in layout["nodes"] if node["kind"] == "fronthaul_ap"]
     positions = positions or {node["role"]: node["position"] for node in nodes}

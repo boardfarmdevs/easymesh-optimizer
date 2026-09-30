@@ -21,7 +21,7 @@ from wmdcfg.world import load_json
 from test_interactions import FakeClient
 
 
-ROOT = Path(__file__).resolve().parents[2] / "wmediumd/configurator/worlds"
+ROOT = Path(__file__).resolve().parents[2] / "medium/configurator/worlds"
 
 
 class CapacityClient(FakeClient):

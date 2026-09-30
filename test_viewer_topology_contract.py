@@ -6,7 +6,7 @@ from pathlib import Path
 
 VIEWER = (
     Path(__file__).resolve().parents[2]
-    / "wmediumd/configurator/worlds/viewer/index.html"
+    / "medium/configurator/worlds/viewer/index.html"
 )
 
 

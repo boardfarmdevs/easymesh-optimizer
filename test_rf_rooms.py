@@ -6,7 +6,7 @@ from wmdcfg.world import verify_world_plan
 from room_demo.band_profiles import validate_profiles
 
 
-ROOT = Path(__file__).resolve().parents[2] / "wmediumd" / "configurator" / "worlds"
+ROOT = Path(__file__).resolve().parents[2] / "medium" / "configurator" / "worlds"
 ROOMS = ("traffic-low-high-off", "traffic-quieter-ap", "received-same-band-roam", "received-discovery-recovery")
 
 

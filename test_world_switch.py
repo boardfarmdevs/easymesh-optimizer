@@ -20,7 +20,7 @@ from wmdcfg.world import _hash, load_json
 from test_interactions import FakeClient
 
 
-ROOT = Path(__file__).resolve().parents[2] / "wmediumd/configurator/worlds"
+ROOT = Path(__file__).resolve().parents[2] / "medium/configurator/worlds"
 
 
 def signed(world):
