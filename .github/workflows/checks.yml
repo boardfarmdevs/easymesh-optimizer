@@ -1,0 +1,48 @@
+# The optimizer's, the room service's and the acceptance tools' checks, without a lab: their
+# tests, with the medium next to them as in the labs (optimizer/ and medium/ side by side); the labs block and
+# the documentation's links hold.
+name: checks
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  # easymesh-medium at the commit the labs pin
+  MEDIUM_REF: e39e98eaa382df1be89ab21549ca0d33f77770fd
+
+jobs:
+  docs:
+    # the labs' shared documentation check (pages/check-docs.py, the same in every repository)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - run: python3 pages/check-docs.py
+  tests:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          path: optimizer
+      - uses: actions/checkout@v5
+        with:
+          repository: boardfarmdevs/easymesh-medium
+          ref: ${{ env.MEDIUM_REF }}
+          path: medium
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -q pytest
+      - name: Tests (the optimizer, the room service and the acceptance tools, both stacks)
+        working-directory: optimizer
+        run: python -m pytest -q
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: The acceptance tools' JavaScript tests
+        working-directory: optimizer/acceptance
+        run: for test in test-*.js; do echo "== $test"; node "$test"; done

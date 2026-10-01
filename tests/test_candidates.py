@@ -1,0 +1,1036 @@
+from __future__ import annotations
+
+from dataclasses import replace
+from io import BytesIO
+from threading import Barrier, Lock
+import json
+import urllib.error
+
+from optimizer.candidates import (
+    CandidateMetricsError,
+    CandidateMetricsUnavailable,
+    CandidateSnapshotSuperseded,
+    ControllerCandidateProvider,
+    _default_request,
+    operating_class,
+)
+from optimizer.model import CandidateObservation, ClientObservation
+import pytest
+
+
+STA = "02:00:00:00:03:00"
+AGENT = "02:00:00:00:09:20"
+RADIO = "02:00:00:00:09:00"
+BSSID = "02:00:00:aa:aa:01"
+
+
+@pytest.mark.parametrize('changed_during_query', [False, True])
+def test_rf_generation_guard_discards_old_snapshot_without_retry(changed_during_query):
+    valid = [changed_during_query]
+    calls = []
+    def requester(*arguments):
+        calls.append(arguments)
+        valid[0] = False
+        return response()
+    provider = ControllerCandidateProvider('http://controller', allow_simulated=True,
+        requester=requester, request_attempts=2, generation_guard=lambda: valid[0])
+    with pytest.raises(CandidateSnapshotSuperseded):
+        list(provider((client(),), (inventory(),), bsses(), '2026-08-21T20:00:00Z'))
+    assert len(calls) == int(changed_during_query)
+
+
+def test_progress_reports_real_completed_queries():
+    updates = []
+    provider = ControllerCandidateProvider("http://controller", allow_simulated=True,
+        requester=lambda *_args: response(), progress=updates.append)
+    measured = list(provider((client(),), (inventory(),), bsses(), "2026-08-21T20:00:00Z"))
+    assert measured
+    assert updates[0]["completed_queries"] == 0
+    assert updates[-1]["completed_queries"] == updates[-1]["total_queries"] == 1
+    assert updates[-1]["active_agent"] == AGENT
+    assert updates[-1]["selected_clients"] == 1
+
+
+def test_failed_query_does_not_report_completion():
+    updates = []
+    def fail(*_args):
+        raise CandidateMetricsUnavailable("offline")
+    provider = ControllerCandidateProvider("http://controller", requester=fail, progress=updates.append)
+    with pytest.raises(CandidateMetricsUnavailable):
+        list(provider((client(),), (inventory(),), bsses(), "2026-08-21T20:00:00Z"))
+    assert all(update["completed_queries"] == 0 for update in updates)
+
+
+def test_request_timing_excludes_retry_wait_and_retains_failed_attempt(monkeypatch):
+    from optimizer import collection_timing
+
+    marks = iter({"at": timestamp, "monotonic_ns": timestamp * 1000000}
+                 for timestamp in (1000, 1050, 1300, 1340))
+    monkeypatch.setattr(collection_timing, "timing_mark", lambda: next(marks))
+    delays = []
+    monkeypatch.setattr("optimizer.candidates.time.sleep", delays.append)
+    replies = iter((CandidateMetricsUnavailable("offline"), response()))
+
+    def requester(*arguments):
+        reply = next(replies)
+        if isinstance(reply, Exception):
+            raise reply
+        return reply
+
+    provider = ControllerCandidateProvider("http://controller", allow_simulated=True,
+        requester=requester, request_attempts=2, retry_delay_seconds=0.25)
+    measured = provider((client(),), (inventory(),), bsses(), "2026-08-21T20:00:00Z")
+    assert measured
+    assert delays == [0.25]
+    assert [row["request_timing"]["elapsed_ms"] for row in provider.last_raw] == [50, 40]
+    assert provider.last_raw[0]["request_timing"]["error_type"] == "CandidateMetricsUnavailable"
+    assert "error" not in provider.last_raw[1]["request_timing"]
+
+
+def test_publication_requires_entire_response_validation():
+    published = []
+    provider = ControllerCandidateProvider("http://controller", allow_simulated=True,
+        requester=lambda *_args: {**response(), "rejected": [{"agent_al": AGENT,
+            "ruid": RADIO, "sta": STA, "error_code": 1, "received_at_ms": 1787342400123}]},
+        result_ready=lambda *values: published.append(values))
+    with pytest.raises(CandidateMetricsError, match="both measured and rejected"):
+        provider((client(),), (inventory(),), bsses(), "2026-08-21T20:00:00Z")
+    assert published == []
+    provider.requester = lambda *_args: response()
+    measured = provider((client(),), (inventory(),), bsses(), "2026-08-21T20:00:00Z")
+    assert published[0][0] == tuple(measured)
+
+
+@pytest.mark.parametrize("code", ["Error_Prev_Cmd_In_Progress", "Error_Not_Ready"])
+def test_unsubmitted_native_command_uses_bounded_admission_retry(monkeypatch, code):
+    from optimizer.candidates import CandidateMetricsBusy
+
+    def fail(*_args, **_kwargs):
+        raise urllib.error.HTTPError("http://controller", 503, "not admitted", {},
+                                     BytesIO(json.dumps({"message": code}).encode()))
+
+    monkeypatch.setattr("urllib.request.urlopen", fail)
+    with pytest.raises(CandidateMetricsBusy):
+        _default_request("http://controller", {})
+
+
+def test_unready_radio_does_not_cancel_other_agents_publication():
+    from optimizer.candidates import CandidateMetricsBusy
+
+    second = replace(inventory(), bssid='02:00:00:aa:aa:02', device_id='02:00:00:00:0a:20')
+    raw_bsses = [*bsses(), {**bsses()[0], 'bssid': second.bssid, 'device_id': second.device_id}]
+    calls, published = [], []
+
+    def request(_url, payload):
+        calls.append(payload['AlMac'])
+        if payload['AlMac'] == AGENT:
+            raise CandidateMetricsBusy('Error_Not_Ready')
+        answer = response()
+        for metric in answer['metrics']:
+            metric['agent_al'] = second.device_id
+        return answer
+
+    provider = ControllerCandidateProvider('http://controller', requester=request,
+        allow_simulated=True, stop_on_unavailable=True,
+        result_ready=lambda *values: published.append(values))
+    with pytest.raises(CandidateMetricsUnavailable, match='Error_Not_Ready'):
+        provider((client(),), (inventory(), second), raw_bsses, '2026-08-21T20:00:00Z')
+    assert calls == [AGENT, second.device_id, AGENT]
+    assert len(published) == 1
+    assert published[0][0][0].bssid == second.bssid
+
+
+def test_unsubmitted_busy_query_retries_after_other_agents_without_losing_coverage():
+    from optimizer.candidates import CandidateMetricsBusy
+
+    second = replace(inventory(), bssid='02:00:00:aa:aa:02', device_id='02:00:00:00:0a:20')
+    raw_bsses = [*bsses(), {**bsses()[0], 'bssid': second.bssid, 'device_id': second.device_id}]
+    calls = []
+    def request(_url, payload):
+        calls.append(payload['AlMac'])
+        if len(calls) == 1:
+            raise CandidateMetricsBusy('Error_Not_Ready')
+        answer = response()
+        for metric in answer['metrics']:
+            metric['agent_al'] = payload['AlMac']
+        return answer
+
+    provider = ControllerCandidateProvider('http://controller', requester=request,
+                                          allow_simulated=True, stop_on_unavailable=True)
+    measured = provider((client(),), (inventory(), second), raw_bsses, '2026-08-21T20:00:00Z')
+    assert calls == [AGENT, second.device_id, AGENT]
+    assert {item.bssid for item in measured} == {BSSID, second.bssid}
+    assert len(provider.last_raw) == 3
+
+
+def test_interactive_outage_stops_queued_unusable_queries():
+    second = replace(inventory(), bssid='02:00:00:aa:aa:02', device_id='02:00:00:00:0a:20')
+    raw_bsses = [*bsses(), {**bsses()[0], 'bssid': second.bssid, 'device_id': second.device_id}]
+    calls = []
+    def fail(*arguments):
+        calls.append(arguments)
+        raise CandidateMetricsUnavailable('native timeout')
+    provider = ControllerCandidateProvider('http://controller', requester=fail, stop_on_unavailable=True)
+    with pytest.raises(CandidateMetricsUnavailable, match='native timeout'):
+        list(provider((client(),), (inventory(), second), raw_bsses, '2026-08-21T20:00:00Z'))
+    assert len(calls) == 1
+
+
+def client() -> ClientObservation:
+    return ClientObservation(
+        sta_mac=STA,
+        connected_device_id="02:00:00:00:08:20",
+        connected_device_name="Extender-2",
+        connected_bssid="02:00:00:bb:bb:01",
+        rcpi=80,
+        association_uptime_seconds=120,
+        metric_observed_at="2026-08-21T20:00:00.000Z",
+        measurement_source="associated_sta_link_metrics",
+        band="5",
+    )
+
+
+def inventory() -> CandidateObservation:
+    return CandidateObservation(
+        sta_mac=STA,
+        bssid=BSSID,
+        device_id=AGENT,
+        device_name="Extender-1",
+        rcpi=None,
+        metric_observed_at=None,
+        measurement_source="controller_bss_inventory_only",
+        band="5",
+    )
+
+
+def bsses():
+    return [{
+        "bssid": BSSID,
+        "device_id": AGENT,
+        "radio_id": RADIO,
+        "band": 1,
+        "channel": 36,
+        "ssid": "private_ssid",
+        "haul_type": "Fronthaul",
+    }]
+
+
+def response(simulated=True):
+    return {
+        "success": True,
+        "provider": "hwsim-wmediumd-read-only",
+        "simulated": simulated,
+        "metrics": [{
+            "agent_al": AGENT,
+            "ruid": RADIO,
+            "sta": STA,
+            "opclass": 115,
+            "channel": 36,
+            "rcpi": 136,
+            "received_at_ms": 1787342400123,
+            "message_id": 42,
+        }],
+    }
+
+
+def test_priority_collection_is_fresh_complete_for_selected_clients_and_falls_back():
+    other_sta = "02:00:00:00:04:00"
+    clients = (client(), replace(client(), sta_mac=other_sta))
+    candidates = (inventory(), replace(inventory(), sta_mac=other_sta))
+    calls = []
+    progress = []
+
+    def request(_url, payload):
+        calls.append(payload)
+        stations = payload["UnassocStaQueryList"][0]["channels"][0]["sta_macs"]
+        return {**response(), "metrics": [{**response()["metrics"][0], "sta": station} for station in stations]}
+
+    provider = ControllerCandidateProvider("http://controller", requester=request, allow_simulated=True,
+        client_prioritizer=lambda selected, _time: selected.sta_mac == STA, progress=progress.append)
+    measured = list(provider(clients, candidates, bsses(), "2026-08-21T20:00:01Z"))
+    assert {item.sta_mac for item in measured} == {STA}
+    assert provider.last_selected_sta_macs == {STA}
+    assert provider.last_selection == {"eligible_clients": 2, "selected_clients": 1, "priority_clients": 1, "deferred_clients": 1}
+    assert progress[-1]["deferred_clients"] == 1
+    # the next round is a full one: deferred clients never go stale
+    measured = list(provider(clients, candidates, bsses(), "2026-08-21T20:00:01Z"))
+    assert {item.sta_mac for item in measured} == {STA, other_sta}
+    assert provider.last_selection["deferred_clients"] == 0
+    measured = list(provider(clients, candidates, bsses(), "2026-08-21T20:00:01Z"))
+    assert {item.sta_mac for item in measured} == {STA}
+    provider.client_prioritizer = lambda *_args: False
+    measured = list(provider(clients, candidates, bsses(), "2026-08-21T20:00:02Z"))
+    assert {item.sta_mac for item in measured} == {STA, other_sta}
+    assert provider.last_selection["deferred_clients"] == 0
+    provider.client_prioritizer = lambda selected, _time: selected.sta_mac == STA
+    provider.client_selector = lambda selected, _time: selected.sta_mac != STA
+    measured = list(provider(clients, candidates, bsses(), "2026-08-21T20:00:03Z"))
+    assert {item.sta_mac for item in measured} == {other_sta}
+    assert provider.last_selection["priority_clients"] == 0
+
+
+def test_priority_selection_still_requires_every_candidate_response():
+    provider = ControllerCandidateProvider("http://controller", allow_simulated=True,
+        requester=lambda *_args: {**response(), "metrics": []}, client_prioritizer=lambda *_args: True)
+    with pytest.raises(CandidateMetricsError, match="omitted"):
+        list(provider((client(),), (inventory(),), bsses(), "2026-08-21T20:00:01Z"))
+
+
+def test_lab_operating_class_mapping_is_frequency_qualified():
+    assert operating_class("2.4", 6) == 81
+    assert operating_class("5", 36) == 115
+    assert operating_class("5", 100) == 121
+    assert operating_class("6", 5) == 131
+
+
+@pytest.mark.parametrize("status", [408, 429, 502, 503, 504, 400, 401, 403, 500])
+def test_http_errors_distinguish_temporary_unavailability(monkeypatch, status):
+    def fail(*_args, **_kwargs):
+        raise urllib.error.HTTPError(
+            "http://controller", status, "query failed", {},
+            BytesIO(b'{"message":"query failed"}'),
+        )
+
+    monkeypatch.setattr("urllib.request.urlopen", fail)
+    with pytest.raises(CandidateMetricsError) as caught:
+        _default_request("http://controller", {})
+    assert isinstance(caught.value, CandidateMetricsUnavailable) == (
+        status in {408, 429, 502, 503, 504}
+    )
+
+
+@pytest.mark.parametrize("error", [TimeoutError("timeout"), urllib.error.URLError("offline")])
+def test_transport_loss_is_temporary_unavailability(monkeypatch, error):
+    def fail(*_args, **_kwargs):
+        raise error
+
+    monkeypatch.setattr("urllib.request.urlopen", fail)
+    with pytest.raises(CandidateMetricsUnavailable):
+        _default_request("http://controller", {})
+
+
+def test_malformed_json_is_not_a_temporary_outage(monkeypatch):
+    monkeypatch.setattr("urllib.request.urlopen", lambda *_args, **_kwargs: BytesIO(b"invalid"))
+    with pytest.raises(CandidateMetricsError) as caught:
+        _default_request("http://controller", {})
+    assert not isinstance(caught.value, CandidateMetricsUnavailable)
+
+
+def test_retry_exhaustion_preserves_temporary_failure_type_and_context():
+    def fail(_url, _payload):
+        raise CandidateMetricsUnavailable("HTTP 504")
+
+    provider = ControllerCandidateProvider(
+        "http://controller", requester=fail, allow_simulated=True,
+        request_attempts=2, retry_delay_seconds=0,
+    )
+    with pytest.raises(CandidateMetricsUnavailable, match=f"agent {AGENT} radio {RADIO} after 2"):
+        provider((client(),), (inventory(),), bsses(), "2026-08-21T20:00:01.000Z")
+    assert [item["attempt"] for item in provider.last_raw] == [1, 2]
+
+
+def test_invalid_agent_response_is_not_hidden_by_another_agent_timeout():
+    second_agent = "02:00:00:00:0a:20"
+    second_bssid = "02:00:00:cc:cc:01"
+
+    def fail(_url, payload):
+        if payload["AlMac"] == AGENT:
+            raise CandidateMetricsUnavailable("HTTP 504")
+        raise CandidateMetricsError("invalid response")
+
+    provider = ControllerCandidateProvider("http://controller", requester=fail, allow_simulated=True)
+    with pytest.raises(CandidateMetricsError, match="invalid response") as caught:
+        provider(
+            (client(),),
+            (inventory(), replace(inventory(), device_id=second_agent, bssid=second_bssid)),
+            bsses() + [{**bsses()[0], "device_id": second_agent, "bssid": second_bssid}],
+            "2026-08-21T20:00:01.000Z",
+        )
+    assert not isinstance(caught.value, CandidateMetricsUnavailable)
+
+
+def test_simulated_provider_uses_live_channel_over_controller_requested_channel():
+    calls = []
+
+    def request(_url, payload):
+        calls.append(payload)
+        return {
+            "success": True,
+            "provider": "hwsim-wmediumd-read-only",
+            "simulated": True,
+            "metrics": [{
+                "agent_al": AGENT,
+                "ruid": RADIO,
+                "sta": STA,
+                "opclass": 131,
+                "channel": 1,
+                "rcpi": 54,
+                "received_at_ms": 1787342400123,
+            }],
+        }
+
+    provider = ControllerCandidateProvider(
+        "http://controller",
+        requester=request,
+        allow_simulated=True,
+        simulated_bss_channels={BSSID: 1},
+    )
+    six_client = replace(client(), band="6")
+    six_candidate = replace(inventory(), band="6")
+    six_bss = [{
+        **bsses()[0],
+        "band": 3,
+        "channel": 37,
+    }]
+
+    measured = list(provider(
+        (six_client,), (six_candidate,), six_bss,
+        "2026-08-21T20:00:01.000Z",
+    ))
+
+    query = calls[0]["UnassocStaQueryList"][0]
+    assert query == {
+        "opclass": 131,
+        "channels": [{"channel": 1, "sta_macs": [STA]}],
+    }
+    assert measured[0].rcpi == 54
+
+
+def test_provider_batches_query_and_maps_ruid_to_exact_bssid():
+    calls = []
+
+    def request(url, payload):
+        calls.append((url, payload))
+        return response()
+
+    provider = ControllerCandidateProvider(
+        "http://controller", requester=request, allow_simulated=True
+    )
+    measured = list(provider(
+        (client(),), (inventory(),), bsses(), "2026-08-21T20:00:01.000Z"
+    ))
+    assert calls == [(
+        "http://controller/api/v1/unassoc_sta_query",
+        {
+            "AlMac": AGENT,
+            "UnassocStaQueryList": [{
+                "opclass": 115,
+                "channels": [{"channel": 36, "sta_macs": [STA]}],
+            }],
+        },
+    )]
+    assert len(measured) == 1
+    assert measured[0].bssid == BSSID
+    assert measured[0].rcpi == 136
+    assert measured[0].metric_observed_at == "2026-08-21T20:00:00.123Z"
+    assert measured[0].measurement_source.endswith(":simulated")
+    assert provider.last_raw[0]["response"]["metrics"][0]["message_id"] == 42
+    assert provider.last_selected_sta_macs == {STA}
+
+
+def test_provider_queries_only_policy_selected_clients():
+    second_sta = "02:00:00:00:04:00"
+    calls = []
+
+    def request(_url, payload):
+        calls.append(payload)
+        selected_sta = payload["UnassocStaQueryList"][0]["channels"][0][
+            "sta_macs"
+        ][0]
+        result = response()
+        result["metrics"][0]["sta"] = selected_sta
+        return result
+
+    provider = ControllerCandidateProvider(
+        "http://controller",
+        requester=request,
+        allow_simulated=True,
+        client_selector=lambda item, _observed_at: item.sta_mac == second_sta,
+    )
+    measured = list(provider(
+        (client(), replace(client(), sta_mac=second_sta)),
+        (inventory(), replace(inventory(), sta_mac=second_sta)),
+        bsses(),
+        "2026-08-21T20:00:01.000Z",
+    ))
+
+    assert [item.sta_mac for item in measured] == [second_sta]
+    assert calls[0]["UnassocStaQueryList"][0]["channels"][0]["sta_macs"] == [
+        second_sta
+    ]
+    assert provider.last_selected_sta_macs == {second_sta}
+
+
+def test_provider_policy_selection_can_skip_all_active_queries():
+    calls = []
+    provider = ControllerCandidateProvider(
+        "http://controller",
+        requester=lambda _url, payload: calls.append(payload) or response(),
+        allow_simulated=True,
+        client_selector=lambda _item, _observed_at: False,
+    )
+
+    assert list(provider(
+        (client(),), (inventory(),), bsses(), "2026-08-21T20:00:01.000Z"
+    )) == []
+    assert calls == []
+    assert provider.last_raw == []
+    assert provider.last_selected_sta_macs == set()
+
+
+@pytest.mark.parametrize(
+    ("metrics_value", "rejected_value"),
+    [
+        ("absent", "absent"),
+        (None, None),
+        ([], []),
+    ],
+    ids=("absent", "null", "empty"),
+)
+def test_optional_candidate_result_lists_accept_empty_wire_representations(
+    metrics_value, rejected_value
+):
+    result = response()
+    if metrics_value == "absent":
+        result.pop("metrics")
+    else:
+        result["metrics"] = metrics_value
+    if rejected_value != "absent":
+        result["rejected"] = rejected_value
+
+    provider = ControllerCandidateProvider(
+        "http://controller", requester=lambda _url, _payload: result,
+        allow_simulated=True,
+    )
+    with pytest.raises(CandidateMetricsError, match=f"omitted {STA}"):
+        list(provider(
+            (client(),), (inventory(),), bsses(),
+            "2026-08-21T20:00:01.000Z",
+        ))
+
+
+def test_measured_response_accepts_legacy_null_rejection_list():
+    result = response()
+    result["rejected"] = None
+    provider = ControllerCandidateProvider(
+        "http://controller", requester=lambda _url, _payload: result,
+        allow_simulated=True,
+    )
+
+    measured = list(provider(
+        (client(),), (inventory(),), bsses(),
+        "2026-08-21T20:00:01.000Z",
+    ))
+
+    assert [item.sta_mac for item in measured] == [STA]
+    assert provider.last_rejected_candidate_keys == set()
+
+
+def test_all_rejected_response_accepts_legacy_null_metric_list():
+    result = response()
+    result["metrics"] = None
+    result["rejected"] = [{
+        "agent_al": AGENT,
+        "ruid": RADIO,
+        "sta": STA,
+        "error_code": 1,
+        "received_at_ms": 1787342400124,
+        "message_id": 42,
+    }]
+    provider = ControllerCandidateProvider(
+        "http://controller", requester=lambda _url, _payload: result,
+        allow_simulated=True,
+    )
+
+    measured = list(provider(
+        (client(),), (inventory(),), bsses(),
+        "2026-08-21T20:00:01.000Z",
+    ))
+
+    assert measured == []
+    assert provider.last_rejected_candidate_keys == {(STA, BSSID)}
+
+
+def test_simulated_candidate_source_requires_explicit_lab_opt_in():
+    provider = ControllerCandidateProvider(
+        "http://controller", requester=lambda _url, _payload: response()
+    )
+    try:
+        list(provider(
+            (client(),), (inventory(),), bsses(), "2026-08-21T20:00:01.000Z"
+        ))
+    except CandidateMetricsError as error:
+        assert "--allow-simulated-candidates" in str(error)
+    else:
+        raise AssertionError("simulated metrics were accepted without opt-in")
+
+
+def test_simulated_lab_uses_frozen_channel_plan_when_controller_channel_is_zero():
+    raw = bsses()
+    raw[0].pop("channel")
+    calls = []
+    provider = ControllerCandidateProvider(
+        "http://controller",
+        requester=lambda _url, payload: calls.append(payload) or response(),
+        allow_simulated=True,
+    )
+    measured = list(provider(
+        (client(),), (inventory(),), raw, "2026-08-21T20:00:01.000Z"
+    ))
+    assert len(measured) == 1
+    assert calls[0]["UnassocStaQueryList"][0] == {
+        "opclass": 115,
+        "channels": [{"channel": 36, "sta_macs": [STA]}],
+    }
+
+
+def test_missing_physical_operating_channel_is_not_invented():
+    raw = bsses()
+    raw[0]["channel"] = 0
+    provider = ControllerCandidateProvider(
+        "http://controller", requester=lambda _url, _payload: response()
+    )
+    try:
+        list(provider(
+            (client(),), (inventory(),), raw, "2026-08-21T20:00:01.000Z"
+        ))
+    except CandidateMetricsError as error:
+        assert "must report it for a physical candidate query" in str(error)
+    else:
+        raise AssertionError("a physical BSS with no channel was queried")
+
+
+def test_queries_for_two_radios_are_not_combined():
+    second_radio = "02:00:00:00:09:01"
+    second_bssid = "02:00:00:aa:aa:02"
+    second_inventory = CandidateObservation(
+        sta_mac=STA,
+        bssid=second_bssid,
+        device_id=AGENT,
+        device_name="Extender-1",
+        rcpi=None,
+        metric_observed_at=None,
+        measurement_source="controller_bss_inventory_only",
+        band="5",
+    )
+    raw = bsses() + [{
+        "bssid": second_bssid,
+        "device_id": AGENT,
+        "radio_id": second_radio,
+        "band": 1,
+        "channel": 40,
+        "ssid": "private_ssid",
+        "haul_type": "Fronthaul",
+    }]
+    calls = []
+
+    def request(_url, payload):
+        calls.append(payload)
+        op = payload["UnassocStaQueryList"][0]
+        channel = op["channels"][0]["channel"]
+        radio = RADIO if channel == 36 else second_radio
+        result = response()
+        result["metrics"][0].update({
+            "ruid": radio,
+            "opclass": op["opclass"],
+            "channel": op["channels"][0]["channel"],
+        })
+        return result
+
+    provider = ControllerCandidateProvider(
+        "http://controller", requester=request, allow_simulated=True
+    )
+    measured = list(provider(
+        (client(),), (inventory(), second_inventory), raw,
+        "2026-08-21T20:00:01.000Z",
+    ))
+    assert len(calls) == 2
+    assert all(len(call["UnassocStaQueryList"]) == 1 for call in calls)
+    assert {item.bssid for item in measured} == {BSSID, second_bssid}
+
+
+@pytest.mark.parametrize("busy_answers", [1, 2])
+def test_parallel_collection_retries_an_unready_radio_after_the_other_queries(busy_answers):
+    from optimizer.candidates import CandidateMetricsBusy
+
+    other_radio, other_bssid = "02:00:00:00:09:01", "02:00:00:aa:aa:03"
+    second_agent, second_radio = "02:00:00:00:0a:20", "02:00:00:00:0a:00"
+    second_bssid = "02:00:00:cc:cc:01"
+    raw = bsses() + [
+        {**bsses()[0], "bssid": other_bssid, "radio_id": other_radio, "channel": 40},
+        {**bsses()[0], "bssid": second_bssid, "device_id": second_agent, "radio_id": second_radio},
+    ]
+    candidates = (
+        inventory(),
+        replace(inventory(), bssid=other_bssid),
+        replace(inventory(), bssid=second_bssid, device_id=second_agent, device_name="Extender-2"),
+    )
+    radios = {(AGENT, 36): RADIO, (AGENT, 40): other_radio, (second_agent, 36): second_radio}
+    calls = []
+    calls_lock = Lock()
+
+    def request(_url, payload):
+        agent = payload["AlMac"]
+        query = payload["UnassocStaQueryList"][0]
+        channel = query["channels"][0]["channel"]
+        with calls_lock:
+            calls.append((agent, channel))
+            answered = calls.count((agent, channel))
+        if (agent, channel) == (AGENT, 36) and answered <= busy_answers:
+            raise CandidateMetricsBusy("Error_Not_Ready")
+        result = response()
+        result["metrics"][0].update({
+            "agent_al": agent, "ruid": radios[(agent, channel)],
+            "opclass": query["opclass"], "channel": channel,
+        })
+        return result
+
+    provider = ControllerCandidateProvider(
+        "http://controller", requester=request, allow_simulated=True, max_parallel_agents=2,
+    )
+    if busy_answers == 2:
+        with pytest.raises(CandidateMetricsBusy, match="Error_Not_Ready"):
+            provider((client(),), candidates, raw, "2026-08-21T20:00:01.000Z")
+    else:
+        measured = provider((client(),), candidates, raw, "2026-08-21T20:00:01.000Z")
+        assert {item.bssid for item in measured} == {BSSID, other_bssid, second_bssid}
+    # The unready radio waits for the other agent's and its own agent's other radio
+    assert sorted(calls[:3]) == [(AGENT, 36), (AGENT, 40), (second_agent, 36)]
+    assert calls[3:] == [(AGENT, 36)]
+
+
+def test_different_agents_are_queried_concurrently_with_stable_results():
+    second_agent = "02:00:00:00:0a:20"
+    second_radio = "02:00:00:00:0a:00"
+    second_bssid = "02:00:00:cc:cc:01"
+    second_inventory = replace(
+        inventory(),
+        bssid=second_bssid,
+        device_id=second_agent,
+        device_name="Extender-2",
+    )
+    raw = bsses() + [{
+        "bssid": second_bssid,
+        "device_id": second_agent,
+        "radio_id": second_radio,
+        "band": 1,
+        "channel": 36,
+        "ssid": "private_ssid",
+        "haul_type": "Fronthaul",
+    }]
+    barrier = Barrier(2, timeout=2)
+    calls = []
+    calls_lock = Lock()
+
+    def request(_url, payload):
+        agent = payload["AlMac"]
+        with calls_lock:
+            calls.append(agent)
+        barrier.wait()
+        result = response()
+        result["metrics"][0].update({
+            "agent_al": agent,
+            "ruid": RADIO if agent == AGENT else second_radio,
+        })
+        return result
+
+    provider = ControllerCandidateProvider(
+        "http://controller", requester=request, allow_simulated=True,
+        max_parallel_agents=2,
+    )
+    measured = list(provider(
+        (client(),), (inventory(), second_inventory), raw,
+        "2026-08-21T20:00:01.000Z",
+    ))
+    assert set(calls) == {AGENT, second_agent}
+    assert [item.bssid for item in measured] == [BSSID, second_bssid]
+    assert [item["request"]["AlMac"] for item in provider.last_raw] == [
+        AGENT, second_agent,
+    ]
+
+
+def test_default_serializes_agents_for_the_native_cli_adapter():
+    second_agent = "02:00:00:00:0a:20"
+    second_radio = "02:00:00:00:0a:00"
+    second_bssid = "02:00:00:cc:cc:01"
+    second_inventory = replace(
+        inventory(), bssid=second_bssid, device_id=second_agent,
+        device_name="Extender-2",
+    )
+    raw = bsses() + [{
+        "bssid": second_bssid,
+        "device_id": second_agent,
+        "radio_id": second_radio,
+        "band": 1,
+        "channel": 36,
+        "ssid": "private_ssid",
+        "haul_type": "Fronthaul",
+    }]
+    active = 0
+    maximum_active = 0
+    calls_lock = Lock()
+
+    def request(_url, payload):
+        nonlocal active, maximum_active
+        with calls_lock:
+            active += 1
+            maximum_active = max(maximum_active, active)
+        result = response()
+        agent = payload["AlMac"]
+        result["metrics"][0].update({
+            "agent_al": agent,
+            "ruid": RADIO if agent == AGENT else second_radio,
+        })
+        with calls_lock:
+            active -= 1
+        return result
+
+    provider = ControllerCandidateProvider(
+        "http://controller", requester=request, allow_simulated=True
+    )
+    measured = list(provider(
+        (client(),), (inventory(), second_inventory), raw,
+        "2026-08-21T20:00:01.000Z",
+    ))
+    assert maximum_active == 1
+    assert [item.bssid for item in measured] == [BSSID, second_bssid]
+
+
+def test_provider_splits_requests_at_the_per_query_station_limit():
+    clients = []
+    candidates = []
+    for index in range(65):
+        station = f"02:00:00:00:{index + 16:02x}:00"
+        clients.append(replace(client(), sta_mac=station))
+        candidates.append(replace(inventory(), sta_mac=station))
+
+    calls = []
+
+    def request(_url, payload):
+        calls.append(payload)
+        stations = [
+            station
+            for opclass in payload["UnassocStaQueryList"]
+            for channel in opclass["channels"]
+            for station in channel["sta_macs"]
+        ]
+        result = response()
+        result["metrics"] = [
+            {**result["metrics"][0], "sta": station}
+            for station in stations
+        ]
+        return result
+
+    provider = ControllerCandidateProvider(
+        "http://controller", requester=request, allow_simulated=True
+    )
+    measured = list(provider(
+        tuple(clients), tuple(candidates), bsses(),
+        "2026-08-21T20:00:01.000Z",
+    ))
+    batch_sizes = [
+        sum(
+            len(channel["sta_macs"])
+            for opclass in call["UnassocStaQueryList"]
+            for channel in opclass["channels"]
+        )
+        for call in calls
+    ]
+    assert batch_sizes == [64, 1]
+    assert len(measured) == 65
+
+
+def test_serial_native_batches_interleave_agents_before_the_next_cohort():
+    second_agent = "02:00:00:00:0a:20"
+    second_radio = "02:00:00:00:0a:00"
+    second_bssid = "02:00:00:aa:aa:02"
+    clients = [replace(client(), sta_mac=f"02:00:00:00:{index + 16:02x}:00") for index in range(65)]
+    candidates = [replace(inventory(), sta_mac=station.sta_mac, device_id=agent, bssid=bssid)
+                  for station in clients for agent, bssid in ((AGENT, BSSID), (second_agent, second_bssid))]
+    raw = bsses() + [{**bsses()[0], "device_id": second_agent,
+                      "radio_id": second_radio, "bssid": second_bssid}]
+    calls, published = [], []
+
+    def request(_url, payload):
+        agent = payload["AlMac"]
+        stations = payload["UnassocStaQueryList"][0]["channels"][0]["sta_macs"]
+        assert len(stations) <= 64
+        calls.append(agent)
+        result = response()
+        result["metrics"] = [{**result["metrics"][0], "agent_al": agent,
+                              "ruid": RADIO if agent == AGENT else second_radio, "sta": station}
+                             for station in stations]
+        return result
+
+    provider = ControllerCandidateProvider("http://controller", requester=request, allow_simulated=True,
+                                          result_ready=lambda measured, *_args: published.append((len(calls), len(measured))))
+    measured = provider(tuple(clients), tuple(candidates), raw, "2026-08-21T20:00:01.000Z")
+    assert calls == [AGENT, second_agent, AGENT, second_agent]
+    assert published == [(1, 64), (2, 64), (3, 1), (4, 1)]
+    assert len(measured) == 130
+
+
+def test_cross_band_inventory_is_not_misreported_as_candidate_measurement():
+    raw = bsses()
+    raw[0]["band"] = 3
+    raw[0]["channel"] = 5
+    cross_band = CandidateObservation(
+        sta_mac=STA,
+        bssid=BSSID,
+        device_id=AGENT,
+        device_name="Extender-1",
+        rcpi=None,
+        metric_observed_at=None,
+        measurement_source="controller_bss_inventory_only",
+        band="6",
+    )
+    calls = []
+    provider = ControllerCandidateProvider(
+        "http://controller",
+        requester=lambda _url, payload: calls.append(payload) or response(),
+        allow_simulated=True,
+    )
+    assert list(provider(
+        (client(),), (cross_band,), raw, "2026-08-21T20:00:01.000Z"
+    )) == []
+    assert calls == []
+
+
+def test_failed_query_records_agent_radio_and_failed_transaction():
+    def fail(_url, _payload):
+        raise CandidateMetricsError("HTTP 504")
+
+    provider = ControllerCandidateProvider(
+        "http://controller", requester=fail, allow_simulated=True
+    )
+    with pytest.raises(
+        CandidateMetricsError,
+        match=f"agent {AGENT} radio {RADIO}: HTTP 504",
+    ):
+        list(provider(
+            (client(),), (inventory(),), bsses(), "2026-08-21T20:00:01.000Z"
+        ))
+    assert len(provider.last_raw) == 1
+    transaction = dict(provider.last_raw[0])
+    assert transaction.pop("elapsed_ms") >= 0
+    assert transaction.pop("finished_at") >= transaction.pop("requested_at")
+    timing = transaction.pop("request_timing")
+    assert timing["elapsed_ms"] >= 0
+    assert timing["error"] == "HTTP 504"
+    assert timing["error_type"] == "CandidateMetricsError"
+    assert transaction == {
+        "request": {
+            "AlMac": AGENT,
+            "UnassocStaQueryList": [{
+                "opclass": 115,
+                "channels": [{"channel": 36, "sta_macs": [STA]}],
+            }],
+        },
+        "query_radio": RADIO,
+        "error": "HTTP 504",
+    }
+
+
+def test_idempotent_candidate_query_can_retry_one_transport_timeout():
+    calls = 0
+
+    def transient(_url, _payload):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise CandidateMetricsError("HTTP 504")
+        return response()
+
+    provider = ControllerCandidateProvider(
+        "http://controller", requester=transient, allow_simulated=True,
+        request_attempts=2, retry_delay_seconds=0,
+    )
+    measured = list(provider(
+        (client(),), (inventory(),), bsses(), "2026-08-21T20:00:01.000Z"
+    ))
+    assert len(measured) == 1
+    assert calls == 2
+    assert provider.last_raw[0]["attempt"] == 1
+    assert provider.last_raw[0]["error"] == "HTTP 504"
+    assert provider.last_raw[1]["attempt"] == 2
+    assert provider.last_raw[1]["response"]["success"] is True
+
+
+def test_partial_success_response_is_rejected():
+    second_sta = "02:00:00:00:04:00"
+    clients = (client(), replace(client(), sta_mac=second_sta))
+    candidates = (inventory(), replace(inventory(), sta_mac=second_sta))
+
+    provider = ControllerCandidateProvider(
+        "http://controller", requester=lambda _url, _payload: response(),
+        allow_simulated=True,
+    )
+
+    with pytest.raises(CandidateMetricsError, match=f"omitted {second_sta}"):
+        list(provider(
+            clients, candidates, bsses(), "2026-08-21T20:00:01.000Z"
+        ))
+
+
+def test_explicit_partial_rejection_completes_without_inventing_rcpi():
+    second_sta = "02:00:00:00:04:00"
+    clients = (client(), replace(client(), sta_mac=second_sta))
+    candidates = (inventory(), replace(inventory(), sta_mac=second_sta))
+    result = response()
+    result["rejected"] = [{
+        "agent_al": AGENT,
+        "ruid": RADIO,
+        "sta": second_sta,
+        "error_code": 1,
+        "received_at_ms": 1787342400124,
+        "message_id": 42,
+    }]
+
+    provider = ControllerCandidateProvider(
+        "http://controller", requester=lambda _url, _payload: result,
+        allow_simulated=True,
+    )
+    measured = list(provider(
+        clients, candidates, bsses(), "2026-08-21T20:00:01.000Z"
+    ))
+
+    assert [item.sta_mac for item in measured] == [STA]
+    assert all(item.rcpi is not None for item in measured)
+    assert provider.last_rejected_candidate_keys == {(second_sta, BSSID)}
+
+
+def test_rejection_must_match_agent_radio_and_requested_sta():
+    result = response()
+    result["metrics"] = []
+    result["rejected"] = [{
+        "agent_al": AGENT,
+        "ruid": "02:00:00:00:ff:00",
+        "sta": STA,
+        "error_code": 1,
+        "received_at_ms": 1787342400124,
+        "message_id": 42,
+    }]
+    provider = ControllerCandidateProvider(
+        "http://controller", requester=lambda _url, _payload: result,
+        allow_simulated=True,
+    )
+
+    with pytest.raises(CandidateMetricsError, match="unexpected rejection"):
+        list(provider(
+            (client(),), (inventory(),), bsses(), "2026-08-21T20:00:01.000Z"
+        ))
+
+
+def test_a_reply_for_another_query_is_discarded_and_retryable():
+    # seen live, rarely: a reply measuring a station this query did not ask for
+    result = response()
+    result["metrics"][0]["sta"] = "02:00:00:00:99:00"
+    provider = ControllerCandidateProvider(
+        "http://controller", requester=lambda _url, _payload: result,
+        allow_simulated=True,
+    )
+
+    with pytest.raises(CandidateMetricsUnavailable, match="unexpected measurement"):
+        list(provider(
+            (client(),), (inventory(),), bsses(), "2026-08-21T20:00:01.000Z"
+        ))

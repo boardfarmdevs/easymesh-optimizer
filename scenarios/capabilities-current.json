@@ -1,0 +1,29 @@
+{
+  "schema": "optimizer.capabilities.v1",
+  "name": "current-labs",
+  "capabilities": {
+    "rf-radio-pair-control": {"available": true, "evidence": "RDK: wmediumd APPLY/GET/dump control socket; prplMesh: prpl-wmediumd atomic control and exact restore"},
+    "rf-atomic-generations": {"available": true, "evidence": "RDK: generation-checked atomic control with readback and restore; prplMesh: generation-checked control with readback"},
+    "current-link-metrics": {"available": true, "evidence": "RDK: controller /api/v1/clients RCPI and traffic counters; prplMesh: prplMesh NBAPI associated STA SignalStrength"},
+    "measurement-receipt-time": {"available": true, "evidence": "RDK: associated and unassociated STA metrics retain controller receipt time; rev130 live cycles measured 12.5-13.6 second maximum age; prplMesh: NBAPI associated STA TimeStamp plus reconstructed unassociated measurement time"},
+    "candidate-link-metrics": {"available": true, "evidence": "RDK: same-band hwsim Unassociated STA Link Metrics are correlated to Agent, RUID, STA and exact target BSSID; this generic capability does not imply cross-band measurements; prplMesh: Unassociated STA Link Metrics correlated to Agent, RUID, STA and target BSSID"},
+    "same-band-candidate-link-metrics": {"available": true, "evidence": "RDK: rev130 completed seven serialized transactions per ten-client cycle and returned 40 complete same-band candidate links; prplMesh: 80/80 alternate-AP measurements accepted for 20 clients"},
+    "cross-band-candidate-link-metrics": {"available": false, "evidence": "RDK: the active Unassociated STA query is same-band; no accepted Beacon, probe or capability adapter supplies exact cross-band target quality; prplMesh: active query is same-band; no accepted exact-target cross-band observation"},
+    "ap-load-metrics": {"available": false, "evidence": "RDK: no accepted timestamped per-BSS/AP utilization adapter; prplMesh: no optimizer-facing timestamped BSS load adapter"},
+    "backhaul-link-metrics": {"available": false, "evidence": "no optimizer-facing timestamped backhaul metric adapter"},
+    "btm-steering": {"available": true, "evidence": "RDK: steer.sh mandate path and bounded carousel acceptance; prplMesh: NBAPI MultiAPSTA.BTMRequest with physical and model verification"},
+    "association-verification": {"available": true, "evidence": "RDK: client link plus controller/API convergence verifier; prplMesh: client link and controller NBAPI ownership must converge"},
+    "traffic-ping": {"available": true, "evidence": "RDK: accepted client traffic gate; prplMesh: 20-client and deepest-chain data-plane gates"},
+    "traffic-iperf3": {"available": false, "evidence": "RDK: traffic driver and capacity envelope not yet accepted; prplMesh: mixed sustained traffic driver and envelope not accepted"},
+    "frequency-qualified-snr": {"available": true, "evidence": "RDK: wmediumd patch 0012 atomically controls and restores source/destination/frequency overrides; rev130 RCPI 138->88->138 acceptance; prplMesh: per-band hwsim identities and frequency-qualified wmediumd control"},
+    "band-candidate-inventory": {"available": true, "evidence": "RDK: /api/v1/bsses exposes 30 controller-owned fronthaul BSS identities across 5 devices and 3 bands; rev130 observer maps 14 same-SSID candidates per client; prplMesh: 30 fronthaul BSS identities across five nodes and three bands"},
+    "backhaul-band-control": {"available": false, "evidence": "RDK: configurator deliberately protects backhaul and no controller action adapter exists; prplMesh: no optimizer action adapter; configurator protects backhaul"},
+    "channel-width-control": {"available": false, "evidence": "RDK: hwsim OneWifi setup currently fixes effective test width at 20 MHz; prplMesh: current hwsim profile uses 20 MHz channels"},
+    "preassociation-probe-control": {"available": false, "evidence": "RDK: no safe probe-response suppression action adapter; prplMesh: no probe-response action adapter"},
+    "controlled-btm-response": {"available": false, "evidence": "RDK: no per-client accept/reject/ignore behavior fixture; prplMesh: no per-client accept/reject/ignore live fixture"},
+    "extender-rf-isolation": {"available": true, "evidence": "RDK: accepted isolation/recovery scenario and topology liveness path; prplMesh: leaf outage, client recovery and same-identity rejoin accepted"},
+    "scale-profile-small": {"available": true, "evidence": "RDK: five mesh devices, ten private clients and ten IoT clients accepted on rev130; prplMesh: controller plus four Agents and 20 clients accepted"},
+    "scale-profile-medium": {"available": false, "evidence": "RDK: 50-client provisioner exists; 64-radio runtime profile is not accepted; prplMesh: 50-client runtime profile not accepted"},
+    "scale-profile-stress": {"available": false, "evidence": "RDK: 100 clients need a validated 105-radio hwsim path before runtime acceptance; prplMesh: 100-client runtime profile not accepted"}
+  }
+}

@@ -1,0 +1,32 @@
+{
+  "schema": "optimizer.lab-bindings.v1",
+  "name": "prpl-small",
+  "traffic_target": "192.168.77.1",
+  "roles": {
+    "gateway": "prpl-controller",
+    "extender_1": "prpl-agent-01",
+    "extender_2": "prpl-agent-02",
+    "extender_3": "prpl-agent-03",
+    "extender_4": "prpl-agent-04",
+    "sta_static_01": "prpl-client-01",
+    "sta_static_02": "prpl-client-03",
+    "sta_static_03": "prpl-client-05",
+    "sta_static_04": "prpl-client-07",
+    "sta_static_05": "prpl-client-09",
+    "sta_static_06": "prpl-client-11",
+    "sta_static_07": "prpl-client-13",
+    "sta_static_08": "prpl-client-15",
+    "sta_static_09": "prpl-client-17",
+    "sta_static_10": "prpl-client-19",
+    "sta_mobile_01": "prpl-client-02",
+    "sta_mobile_02": "prpl-client-04",
+    "sta_mobile_03": "prpl-client-06",
+    "sta_mobile_04": "prpl-client-08",
+    "sta_mobile_05": "prpl-client-10",
+    "sta_mobile_06": "prpl-client-12",
+    "sta_mobile_07": "prpl-client-14",
+    "sta_mobile_08": "prpl-client-16",
+    "sta_mobile_09": "prpl-client-18",
+    "sta_mobile_10": "prpl-client-20"
+  }
+}
