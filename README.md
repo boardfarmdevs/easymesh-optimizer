@@ -52,8 +52,13 @@ lab VM (with `--flavor rdk|prpl` or `--stack rdk|prpl`): the room catalog in a b
 (`room-feature-acceptance.js`), the geometry backhaul rooms (`room-backhaul-features.js`),
 default readiness (`room-final-readiness.py`), the RF property and access rooms, the
 load-aware, counter-guard, native-counter and traffic acceptance, and the guest audits
-and host monitors they install; each with its unit tests. The labs' suite runners stay in
-the labs and call them from here. The labs' room manuals: the
+and host monitors they install; each with its unit tests. The latency tools are here too,
+read-only diagnostics run by hand during a moving room (`--native-stack rdk|prpl`): from
+a controller change to the topology page drawing it (`controller-render-latency.js`,
+with its metric and presentation parts), from a room state change to the room viewer
+drawing it (`room-render-latency.js`), and the native controller's own share, traced in
+the VM (`native-controller-latency.js`, `native-controller-trace.py`). The labs' suite
+runners stay in the labs and call them from here. The labs' room manuals: the
 [RDK lab's](https://github.com/boardfarmdevs/meta-cmf-bananapi-vcpe/blob/main/doc/easymesh/room-service/README.md),
 [prplMesh's](https://github.com/boardfarmdevs/prplmesh-lab/blob/main/docs/room-service/README.md).
 

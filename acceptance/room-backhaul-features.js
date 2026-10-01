@@ -7,7 +7,7 @@ const os = require('os');
 const {execFile} = require('child_process');
 const util = require('util');
 const {promisify} = util;
-const {kernelClientAudit} = require('./room-feature-acceptance.js');
+const {kernelClientAudit, reauditOwners} = require('./room-feature-acceptance.js');
 const execute = promisify(execFile);
 const {hostCommand, guestAuditInstallCommand, startHostMonitor} = require('./room-host-monitor.js');
 const rooms = ['backhaul-branch-formation', 'backhaul-parent-handover', 'backhaul-isolation-recovery'];
@@ -273,7 +273,7 @@ async function run(options) {
     return {nodes, parents, paths: parentPaths(parents)};
   }
 
-  async function auditClients(observation) {
+  async function auditClientsOnce(observation) {
     const mapping = Object.fromEntries(Object.entries(bindings).map(([role, client]) => [role, client.container]));
     assert.ok(Object.values(mapping).every(value => /^(?:prpl-client-[0-9]{2,3}|wlan-client(?:-[0-9]{3})?)$/.test(value)));
     const wanted = Object.entries(observation.interactions.roles)
@@ -282,7 +282,13 @@ async function run(options) {
     const response = await execute(...hostCommand(options.host, 'lxc exec ' + options.vm +
       " -- python3 /tmp/room-feature-guest-audit.py links '" + JSON.stringify(mapping) + "'"),
       {timeout: 45000, maxBuffer: 1048576});
-    const result = kernelClientAudit(bindings, wanted, model, JSON.parse(response.stdout));
+    return kernelClientAudit(bindings, wanted, model, JSON.parse(response.stdout));
+  }
+
+  async function auditClients(observation) {
+    // a client moved between the model sample and the links is audited again (reauditOwners)
+    const result = await reauditOwners(await auditClientsOnce(observation),
+      async () => auditClientsOnce(await sample('owner-reaudit')));
     assert.equal(result.passed, true, JSON.stringify(result.errors));
     return result;
   }

@@ -481,14 +481,18 @@ async function run(args) {
       throw error;
     }
   }
-  async function auditKernel(sampleResult) {
-    if (!sampleResult) return {passed: false, errors: [{reason: 'model_snapshot_unavailable'}]};
+  async function auditKernelOnce(sampleResult) {
     const started = performance.now();
     const clientContainers = Object.fromEntries(Object.entries(bindings).map(([role, client]) => [role, client.container]));
     const links = await guest('links', JSON.stringify(clientContainers));
     return {...kernelClientAudit(bindings, sampleResult.wanted, sampleResult.roomAssociations, links),
       elapsedMs: performance.now() - started, observedAt: new Date().toISOString(),
       modelObservedAt: sampleResult.wallTime, modelAgeAtStartMs: started - sampleResult.monoMs};
+  }
+  async function auditKernel(sampleResult, world) {
+    if (!sampleResult) return {passed: false, errors: [{reason: 'model_snapshot_unavailable'}]};
+    const first = await auditKernelOnce(sampleResult);
+    return reauditOwners(first, async () => auditKernelOnce(await sample(world)));
   }
   async function events() {
     while (!stopped) {
@@ -783,7 +787,7 @@ async function run(args) {
           requestTiming: loaded.requestTiming, server: loaded.result, goldenSha256: world.golden_sha256};
         if (!activeRoom.load.passed) throw new Error('Deployed golden identity does not match the selected room');
         activeRoom.initial = await settle(world, Number(args['initial-timeout'] || 90), 'loaded');
-        activeRoom.initial.kernel = await auditKernel(activeRoom.initial.final);
+        activeRoom.initial.kernel = await auditKernel(activeRoom.initial.final, world);
         activeRoom.initial.passed &&= activeRoom.initial.kernel.passed;
         await screenshot('loaded');
         await room.bringToFront();
@@ -818,7 +822,7 @@ async function run(args) {
             visited.add(checkpoint);
             const started = performance.now();
             const settled = await settle(world, Number(args['checkpoint-timeout'] || 60), 'checkpoint-' + checkpoint);
-            settled.kernel = await auditKernel(settled.final);
+            settled.kernel = await auditKernel(settled.final, world);
             settled.passed &&= settled.kernel.passed;
             activeRoom.checkpoints.push({timeMs: checkpoint, ...settled});
             await movingCapture;
@@ -831,7 +835,7 @@ async function run(args) {
           checkpointWaitSeconds: checkpointMs / 1000, checkpointsVisited: [...visited]};
         if (!completed) throw new Error('Playback exceeded bounded wall-clock deadline');
         activeRoom.final = await settle(world, Number(args['final-timeout'] || 120), 'final');
-        activeRoom.kernel = await auditKernel(activeRoom.final.final);
+        activeRoom.kernel = await auditKernel(activeRoom.final.final, world);
         await movingCapture;
         await screenshot('final');
       } catch (error) {
@@ -888,6 +892,26 @@ async function run(args) {
   return report;
 }
 
+// The model sample and the clients' kernel links are read one after the other, so a client
+// the optimizer moved in between disagrees by construction (prpl's sta_static_06 and _07,
+// 30 Sep and 1 Oct). Only that disagreement is audited again, on a fresh sample and fresh
+// links, at most `attempts` times `waitMs` apart: a model that stays wrong still fails, and
+// the report keeps the first mismatch and how long agreement took.
+async function reauditOwners(first, again, attempts = 3, waitMs = 3000, pause = ms => new Promise(r => setTimeout(r, ms))) {
+  const onlyOwners = result => !result.passed && result.errors.length > 0 &&
+    result.errors.every(error => error.reason === 'native_owner_mismatch');
+  if (!onlyOwners(first)) return first;
+  const started = Date.now();
+  let result = first;
+  let tries = 1;
+  while (onlyOwners(result) && tries < attempts) {
+    await pause(waitMs);
+    result = await again();
+    tries++;
+  }
+  return {...result, ownerReaudits: tries - 1, firstOwnerErrors: first.errors, ownerAgreementMs: result.passed ? Date.now() - started : null};
+}
+
 function kernelClientAudit(bindings, wanted, associations, links) {
   const online = new Set(wanted.map(lower));
   const model = new Map(associations.map(client => [lower(client.mac), lower(client.bssid)]));
@@ -908,6 +932,6 @@ function kernelClientAudit(bindings, wanted, associations, links) {
   return {onlineCount: online.size, offlineCount: bound.size - online.size, passed: errors.length === 0, errors, links};
 }
 
-module.exports = {argumentsFrom, worldApplyResponse, expectedFrame, evaluate, distribution, eventPerformance, viewAgreement, recordedEventKind, fronthaulOutages, bandExpectations, bandSteeringSummary, bandNativeErrors, kernelClientAudit, trafficExperimentSummary, qualificationFailures, apExpectations};
+module.exports = {argumentsFrom, worldApplyResponse, expectedFrame, evaluate, distribution, eventPerformance, viewAgreement, recordedEventKind, fronthaulOutages, bandExpectations, bandSteeringSummary, bandNativeErrors, kernelClientAudit, reauditOwners, trafficExperimentSummary, qualificationFailures, apExpectations};
 if (require.main === module) run(argumentsFrom(process.argv.slice(2))).then(report => { process.exitCode = report.passed ? 0 : 1; })
   .catch(error => { console.error(error); process.exitCode = 2; });

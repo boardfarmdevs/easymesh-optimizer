@@ -34,7 +34,7 @@ assert.doesNotMatch(screenshotSource, /Promise\.all/);
 assert.ok(screenshotSource.lastIndexOf('await room.bringToFront()') > screenshotSource.indexOf('await topology.screenshot'));
 assert.ok(harnessSource.includes("report.browserNetwork = 'lab-origins-only'"));
 assert.ok(harnessSource.includes("route.abort('blockedbyclient')"));
-assert.match(harnessSource, /activeRoom\.final = await settle\([^;]+;\s*activeRoom\.kernel = await auditKernel\(activeRoom\.final\.final\);\s*await movingCapture;\s*await screenshot\('final'\);/);
+assert.match(harnessSource, /activeRoom\.final = await settle\([^;]+;\s*activeRoom\.kernel = await auditKernel\(activeRoom\.final\.final, world\);\s*await movingCapture;\s*await screenshot\('final'\);/);
 assert.ok(harnessSource.includes('modelAgeAtStartMs: started - sampleResult.monoMs'));
 const kernelBindings = {active: {sta_mac: '02:00:00:10:04:00'}, dormant: {sta_mac: '02:00:00:20:32:00'}};
 const kernelWanted = ['02:00:00:10:04:00'];
@@ -207,3 +207,29 @@ assert.deepEqual(qualificationFailures(qualification, [{room: 'fixture'}]), ['br
 assert.deepEqual(qualificationFailures({...qualification, initial: undefined, final: {passed: false},
   errors: ['failure']}), ['initialConvergence', 'finalConvergence', 'roomErrors']);
 console.log('PASS: golden interpolation, absence, duplicates, ownership, epochs, freshness, coverage, mesh, script and percentile checks');
+
+(async () => {
+  const {reauditOwners} = require('./room-feature-acceptance.js');
+  const now = () => 0;
+  const owner = {passed: false, errors: [{role: 'sta_static_06', reason: 'native_owner_mismatch', expected: 'a', actual: 'b'}]};
+  const agreed = {passed: true, errors: []};
+  const noPause = async () => {};
+  assert.deepEqual(await reauditOwners(agreed, async () => { throw new Error('no re-audit'); }, 3, 0, noPause), agreed);
+  let calls = 0;
+  const caught = await reauditOwners(owner, async () => { calls++; return agreed; }, 3, 0, noPause);
+  assert.equal(caught.passed, true);
+  assert.equal(caught.ownerReaudits, 1);
+  assert.deepEqual(caught.firstOwnerErrors, owner.errors, 'the first mismatch stays in the report');
+  assert.equal(calls, 1);
+  calls = 0;
+  const stuck = await reauditOwners(owner, async () => { calls++; return owner; }, 3, 0, noPause);
+  assert.equal(stuck.passed, false, 'a model that stays wrong still fails');
+  assert.equal(calls, 2);
+  assert.equal(stuck.ownerAgreementMs, null);
+  const other = {passed: false, errors: [{reason: 'offline_client_connected_or_unobserved'}]};
+  assert.deepEqual(await reauditOwners(other, async () => agreed, 3, 0, noPause), other, 'only owner mismatches are audited again');
+  const mixed = {passed: false, errors: [...owner.errors, ...other.errors]};
+  assert.deepEqual(await reauditOwners(mixed, async () => agreed, 3, 0, noPause), mixed);
+  void now;
+  console.log('PASS: owner mismatches between a model sample and later links are audited again, boundedly');
+})().catch(error => { console.error(error); process.exitCode = 1; });
