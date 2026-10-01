@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# Build this repository's Pages site into dist/site. This is the only per-repository
+# step: pages/finish-site.py, pages/labs-bar.js and .github/workflows/pages.yml are
+# the same in every repository with a site.
+#
+# easymesh-optimizer: the explainer (site/), static files; every local link and anchor checked.
+set -euo pipefail
+cd "$(dirname "$(readlink -f "$0")")/.."
+rm -rf dist/site
+mkdir -p dist
+cp -a site dist/site
+node --check dist/site/toc.js
+python3 - dist/site <<'PY'
+import re, sys
+from pathlib import Path
+site = Path(sys.argv[1])
+problems = []
+for page in site.glob("*.html"):
+    text = page.read_text()
+    ids = set(re.findall(r'\bid="([^"]+)"', text))
+    for ref in re.findall(r'(?:href|src)="([^"]+)"', text):
+        if ref.startswith(("http://", "https://", "mailto:", "data:")):
+            continue
+        path, _, anchor = ref.partition("#")
+        if path and not (site / path.split("?")[0]).exists():
+            problems.append(f"{page.name}: missing {path}")
+        if anchor and not path and anchor not in ids:
+            problems.append(f"{page.name}: no #{anchor}")
+    for url in re.findall(r'url\(#([^)]+)\)', text):
+        if url not in ids:
+            problems.append(f"{page.name}: no #{url} (url())")
+if problems:
+    sys.exit("\n".join(problems))
+print(f"site: {len(list(site.glob('*.html')))} page(s), links and anchors resolve")
+PY

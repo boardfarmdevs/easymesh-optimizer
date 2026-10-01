@@ -1,0 +1,547 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>How the optimizer works</title>
+<meta name="description" content="How easymesh-optimizer watches an EasyMesh controller, measures every client's other options, decides with an explainable policy, steers one client at a time and checks that it worked.">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=IBM+Plex+Sans+Condensed:wght@600;700&family=IBM+Plex+Sans:ital,wght@0,400;0,600;1,400&display=swap">
+<link rel="stylesheet" href="style.css">
+<script src="toc.js" defer></script>
+</head>
+<body>
+<a class="skip" href="#question">Skip to the article</a>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" class="arrow"/>
+    </marker>
+    <marker id="ah-accent" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" class="fill-accent"/>
+    </marker>
+    <marker id="ah-radio" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" class="fill-radio"/>
+    </marker>
+    <marker id="ah-good" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" class="fill-good"/>
+    </marker>
+    <marker id="ah-bad" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" class="fill-bad"/>
+    </marker>
+  </defs>
+</svg>
+
+<div class="page">
+<header class="hero">
+  <p class="eyebrow">easymesh-optimizer</p>
+  <h1>How the EasyMesh optimizer works</h1>
+  <p class="lead">An EasyMesh controller knows where every client is and can ask a client to move.
+  What it does not have is a good answer to <em>when</em>, and <em>where to</em>. The optimizer is
+  that answer, kept outside the controller: a process that watches the mesh, measures each
+  client's other options, decides with a policy it can explain, moves one client at a time and
+  checks that the move happened. This page follows one decision from the first measurement to
+  the record of why it was made.</p>
+  <p class="meta"><span>About a 20-minute read</span><a href="https://github.com/boardfarmdevs/easymesh-optimizer">The repository</a><a href="https://boardfarmdevs.github.io/easymesh-medium/">The RF medium it is tested on</a><a href="https://boardfarmdevs.github.io/easymesh-labs/">The EasyMesh labs</a></p>
+</header>
+
+<nav class="toc" aria-label="Contents">
+  <p>Contents</p>
+  <ol>
+    <li><a href="#question">The question</a></li>
+    <li><a href="#outside">Outside the controller</a></li>
+    <li><a href="#loop">One loop</a></li>
+    <li><a href="#observe">Observing the mesh</a></li>
+    <li><a href="#candidates">Asking about the other access points</a></li>
+    <li><a href="#rcpi">Signal in one ruler</a></li>
+    <li><a href="#decide">Deciding</a></li>
+    <li><a href="#reasons">Every "no" has a reason</a></li>
+    <li><a href="#steer">Steering</a></li>
+    <li><a href="#verify">Checking that it worked</a></li>
+    <li><a href="#guard">Guardrails</a></li>
+    <li><a href="#beyond">Beyond signal</a></li>
+    <li><a href="#stacks">Two stacks, one optimizer</a></li>
+    <li><a href="#rooms">The room service</a></li>
+    <li><a href="#proof">Proving a policy</a></li>
+    <li><a href="#repository">The repository</a></li>
+  </ol>
+</nav>
+
+<article>
+
+<section id="question">
+<h2>The question</h2>
+<p>A home mesh has a gateway and a few extenders, each with access points on 2.4, 5 and 6 GHz.
+Every phone and laptop picks one of them and, left alone, stays there. Clients are sticky: a
+laptop that joined the extender in the hall keeps it after it is carried to the bedroom, where
+the gateway would serve it twice as fast. The client cannot see the mesh as a whole. The mesh
+can.</p>
+<p>EasyMesh gives the controller the means. Agents report which clients they serve and how well
+they hear them; the controller can ask other agents to listen for a client; and it can send a
+<em>steering request</em> that makes the serving access point suggest, through an 802.11v BSS
+Transition Management (BTM) request, that the client move to a named access point. The standard
+stops there. Which client to move, where, after how much evidence and how often, is left to
+whoever builds the controller. That is the optimizer's job.</p>
+<aside class="note"><span class="t">What makes it hard</span>
+<p>Measurements arrive late and not all at once. A client can refuse to move, or move somewhere
+else. Moving it costs a short interruption, and moving it back and forth costs more than leaving
+it. A good optimizer is as much about when not to act as about when to act.</p></aside>
+</section>
+
+<section id="outside">
+<h2>Outside the controller</h2>
+<p>The labs keep a strict division. The EasyMesh implementation, RDK's or prplMesh's, supplies
+facts and mechanisms: topology, associations, link metrics, measurement queries and the steering
+transport. It supplies no target, no score, no threshold and no trigger, and the agents' own
+local steering is switched off for these experiments. Everything that is a decision lives in one
+external process, next to the controller in the lab VM.</p>
+<figure class="wide" id="fig-outside">
+<div class="fig">
+<svg viewBox="0 0 820 320" role="img" aria-label="The optimizer reads the controller and asks it to steer; the controller talks IEEE 1905 to the agents; the agents talk 802.11 to the clients.">
+  <rect class="box-accent" x="16" y="30" width="214" height="260" rx="12"/>
+  <text class="t" x="36" y="60">External optimizer</text>
+  <text class="s" x="36" y="82">in the lab VM, its own process</text>
+  <g class="s">
+    <text class="s" x="36" y="122">· freshness rules</text>
+    <text class="s" x="36" y="146">· candidates and scores</text>
+    <text class="s" x="36" y="170">· thresholds, hold, dwell</text>
+    <text class="s" x="36" y="194">· per-client state</text>
+    <text class="s" x="36" y="218">· whether, when, where</text>
+    <text class="s" x="36" y="242">· the record of why</text>
+  </g>
+  <text class="xs lbl-accent" x="36" y="274">owns every decision</text>
+
+  <rect class="box" x="320" y="30" width="230" height="110" rx="12"/>
+  <text class="t" x="336" y="60">EasyMesh controller</text>
+  <text class="s" x="336" y="82">RDK or prplMesh</text>
+  <text class="s" x="336" y="102">its model of the mesh</text>
+  <text class="xs" x="336" y="126">facts and mechanisms, no policy</text>
+
+  <rect class="box" x="320" y="190" width="230" height="100" rx="12"/>
+  <text class="t" x="336" y="220">Agents</text>
+  <text class="s" x="336" y="242">gateway and extenders</text>
+  <text class="xs" x="336" y="266">measure, report, send BTM</text>
+
+  <rect class="box-radio" x="620" y="190" width="184" height="100" rx="12"/>
+  <text class="t" x="636" y="220">Clients</text>
+  <text class="s" x="636" y="242">phones, laptops</text>
+  <text class="xs" x="636" y="266">accept a move, or not</text>
+
+  <path class="ln" d="M230 70 H316" marker-end="url(#ah)"/>
+  <text class="xs" x="273" y="62" text-anchor="middle">reads</text>
+  <path class="ln-accent" d="M230 112 H316" marker-end="url(#ah-accent)"/>
+  <text class="xs lbl-accent" x="273" y="104" text-anchor="middle">steer</text>
+  <path class="ln" d="M410 140 V186" marker-end="url(#ah)"/>
+  <path class="ln" d="M460 190 V144" marker-end="url(#ah)"/>
+  <text class="xs" x="402" y="168" text-anchor="end">requests</text>
+  <text class="xs" x="468" y="162">reports</text>
+  <text class="xs" x="468" y="176">IEEE 1905</text>
+  <path class="ln-radio" d="M550 230 H616" marker-end="url(#ah-radio)"/>
+  <path class="ln-radio" d="M616 252 H554" marker-end="url(#ah-radio)"/>
+  <text class="xs lbl-radio" x="583" y="222" text-anchor="middle">802.11</text>
+</svg>
+</div>
+<figcaption><b>Who owns what.</b> The optimizer only reads the controller and asks it to steer. The
+controller carries the request to the serving agent over IEEE 1905; the agent asks the client over
+802.11. The client still decides.</figcaption>
+</figure>
+<p>Keeping the policy outside has a practical reason and a scientific one. Practically, one
+optimizer serves two different controllers. Scientifically, the same policy can run against the
+same rooms on both stacks, and the stack's own behaviour stops being mixed up with the policy's.</p>
+</section>
+
+<section id="loop">
+<h2>One loop</h2>
+<p>The optimizer is a loop that runs about once a second. Each turn observes, measures what is
+missing, decides for each client, passes the decision through the guardrails, acts on at most what
+they allow, and checks earlier actions. Every step writes to a journal.</p>
+<figure id="fig-loop">
+<div class="fig">
+<svg viewBox="0 0 640 370" role="img" aria-label="A cycle of observe, measure, decide, guard, steer and verify around a journal.">
+  <g class="ln">
+    <path d="M382 60 L428 92" marker-end="url(#ah)"/>
+    <path d="M434 142 V224" marker-end="url(#ah)"/>
+    <path d="M420 274 L384 306" marker-end="url(#ah)"/>
+    <path d="M258 310 L222 278" marker-end="url(#ah)"/>
+    <path d="M206 226 V144" marker-end="url(#ah)"/>
+    <path d="M222 94 L256 62" marker-end="url(#ah)"/>
+  </g>
+  <g>
+    <rect class="box-accent" x="260" y="31" width="120" height="44" rx="10"/><text class="t" x="320" y="58" text-anchor="middle">Observe</text>
+    <rect class="box" x="374" y="96" width="120" height="44" rx="10"/><text class="t" x="434" y="123" text-anchor="middle">Measure</text>
+    <rect class="box-accent" x="374" y="228" width="120" height="44" rx="10"/><text class="t" x="434" y="255" text-anchor="middle">Decide</text>
+    <rect class="box-warn" x="260" y="295" width="120" height="44" rx="10"/><text class="t" x="320" y="322" text-anchor="middle">Guard</text>
+    <rect class="box" x="146" y="228" width="120" height="44" rx="10"/><text class="t" x="206" y="255" text-anchor="middle">Steer</text>
+    <rect class="box-good" x="146" y="96" width="120" height="44" rx="10"/><text class="t" x="206" y="123" text-anchor="middle">Verify</text>
+  </g>
+  <g class="xs">
+    <text class="xs" x="500" y="88">ask agents to listen</text>
+    <text class="xs" x="500" y="190">a policy, per client</text>
+    <text class="xs" x="388" y="356">limits and pauses</text>
+    <text class="xs" x="70" y="190" text-anchor="start">one BTM steer</text>
+    <text class="xs" x="70" y="88">did it move? traffic?</text>
+    <text class="xs" x="388" y="22">topology, clients, metrics</text>
+  </g>
+  <rect class="box" x="250" y="160" width="140" height="50" rx="10"/>
+  <text class="t" x="320" y="182" text-anchor="middle">Journal</text>
+  <text class="xs" x="320" y="200" text-anchor="middle">every step, hash-chained</text>
+</svg>
+</div>
+<figcaption><b>The loop.</b> The decision step is a pure function of a snapshot and the previous
+state, so a recorded run can be replayed and gives the same decisions.</figcaption>
+</figure>
+</section>
+
+<section id="observe">
+<h2>Observing the mesh</h2>
+<p>The controller publishes its view through four reads: the topology (which agent serves which
+client, and the backhaul tree), the clients with their link metrics, the mesh devices, and the
+access points (BSSs) with their exact identities, bands and SSIDs. The optimizer keeps the raw
+records and turns them into one <em>snapshot</em>: an immutable picture of every client, its
+serving access point, its current link quality and when that was measured.</p>
+<p>Two rules shape the snapshot. Everything carries its age, because a decision on a reading from
+a minute ago is a decision about a different house. And nothing unknown becomes a number: a
+missing measurement stays missing and can only ever stop an action, never cause one. The lab's
+medium knows the true signal of every link, and the optimizer never reads it; it sees only what a
+controller in a real house would see.</p>
+</section>
+
+<section id="candidates">
+<h2>Asking about the other access points</h2>
+<p>The serving access point knows how well it hears its client. To compare, the optimizer needs to
+know how well the others would. EasyMesh has a message for this: <em>Unassociated STA Link
+Metrics</em>. The controller asks an agent's radio to listen, on its channel, for frames from a
+client it does not serve and report the client's signal, as RCPI. The optimizer asks through the
+controller, groups the clients per agent radio, and maps each answer to the exact access point
+(BSSID) that would serve the client there.</p>
+<figure class="wide" id="fig-candidates">
+<div class="fig">
+<svg viewBox="0 0 820 300" role="img" aria-label="A client served by extender 1; the gateway hears it at RCPI 104 six seconds ago; extender 2 did not answer and stays unknown.">
+  <rect class="box-warn" x="40" y="200" width="34" height="34" rx="7"/><text class="s" x="57" y="254" text-anchor="middle">extender 1</text>
+  <rect class="box-accent" x="200" y="40" width="34" height="34" rx="7"/><text class="s" x="217" y="94" text-anchor="middle">gateway</text>
+  <rect class="box" x="380" y="200" width="34" height="34" rx="7"/><text class="s" x="397" y="254" text-anchor="middle">extender 2</text>
+  <circle class="fill-radio" cx="140" cy="170" r="8"/><text class="s lbl-radio" x="150" y="194">client</text>
+  <path class="ln-warn" stroke-width="3" d="M140 170 L72 208"/>
+  <path class="ln-accent dash" d="M144 162 L206 76"/>
+  <path class="ln-faint dash" d="M150 172 L378 214"/>
+  <text class="xs lbl-warn" x="58" y="180">serving</text>
+  <text class="xs lbl-accent" x="186" y="130">listens, hears it</text>
+  <text class="xs" x="258" y="182">no answer</text>
+
+  <text class="t" x="470" y="40">The client's candidates</text>
+  <text class="xs" x="470" y="70">ACCESS POINT</text><text class="xs" x="600" y="70">RCPI</text><text class="xs" x="660" y="70">dBm</text><text class="xs" x="720" y="70">AGE</text>
+  <path class="ln-faint" d="M470 80 H800"/>
+  <text class="s" x="470" y="104">extender 1 (serving)</text><text class="s mono" x="600" y="104">90</text><text class="s mono" x="660" y="104">−65</text><text class="s mono" x="720" y="104">2 s</text>
+  <text class="s" x="470" y="134">gateway</text><text class="s mono lbl-accent" x="600" y="134">110</text><text class="s mono" x="660" y="134">−55</text><text class="s mono" x="720" y="134">6 s</text>
+  <text class="s" x="470" y="164">extender 2</text><text class="s mono" x="600" y="164">—</text><text class="s mono" x="660" y="164">—</text><text class="s mono" x="720" y="164">unknown</text>
+  <path class="ln-faint" d="M470 178 H800"/>
+  <text class="xs" x="470" y="204">until extender 2 answers, the picture is incomplete</text>
+  <text class="xs" x="470" y="220">and the client stays; an old answer is no answer</text>
+</svg>
+</div>
+<figcaption><b>Measuring the alternatives.</b> Each answer comes with the time the controller
+received it. The query listens where the client transmits, so it measures access points on the
+client's band; moving a client to another band needs more evidence (see <a href="#beyond">Beyond
+signal</a>).</figcaption>
+</figure>
+<p>These queries are slow and serialized in a real controller: with twenty clients, a complete
+picture takes tens of seconds. So the optimizer collects in rounds of a few clients, keeps every
+answer with its age, and after a move asks again only about the radios the moved client still needs.
+A decision waits for a candidate picture that is complete and fresh enough; until then, it does
+nothing.</p>
+</section>
+
+<section id="rcpi">
+<h2>Signal in one ruler</h2>
+<p>EasyMesh reports signal as RCPI, an integer from 0 to 220 in half-decibel steps: RCPI&nbsp;0 is
+−110&nbsp;dBm and every 2 RCPI is 1&nbsp;dB more. The default policy speaks in RCPI because that is
+what the controller reports, and two of its numbers do most of the work.</p>
+<figure class="wide" id="fig-rcpi">
+<div class="fig">
+<svg viewBox="0 0 820 190" role="img" aria-label="RCPI 0 to 220 against dBm -110 to 0; the policy considers moving a client whose link is below RCPI 100, to a candidate at least 16 RCPI better.">
+  <rect class="box-warn" x="40" y="52" width="336" height="24" rx="4"/>
+  <rect class="box-good" x="376" y="52" width="404" height="24" rx="4"/>
+  <text class="xs lbl-warn" x="208" y="44" text-anchor="middle">weak enough to consider a move</text>
+  <text class="xs lbl-good" x="578" y="44" text-anchor="middle">good enough: left alone</text>
+  <path class="ln" d="M40 76 V86 M174.5 76 V86 M309.1 76 V86 M376.4 76 V92 M443.6 76 V86 M578.2 76 V86 M712.7 76 V86 M780 76 V86"/>
+  <g class="xs">
+    <text class="xs mono" x="40" y="104" text-anchor="middle">0</text>
+    <text class="xs mono" x="174.5" y="104" text-anchor="middle">40</text>
+    <text class="xs mono" x="309.1" y="104" text-anchor="middle">80</text>
+    <text class="xs mono lbl-accent" x="376.4" y="110" text-anchor="middle">100</text>
+    <text class="xs mono" x="443.6" y="104" text-anchor="middle">120</text>
+    <text class="xs mono" x="578.2" y="104" text-anchor="middle">160</text>
+    <text class="xs mono" x="712.7" y="104" text-anchor="middle">200</text>
+    <text class="xs mono" x="780" y="104" text-anchor="middle">220 RCPI</text>
+    <text class="xs" x="40" y="122" text-anchor="middle">−110</text>
+    <text class="xs" x="174.5" y="122" text-anchor="middle">−90</text>
+    <text class="xs" x="309.1" y="122" text-anchor="middle">−70</text>
+    <text class="xs lbl-accent" x="376.4" y="128" text-anchor="middle">−60</text>
+    <text class="xs" x="443.6" y="122" text-anchor="middle">−50</text>
+    <text class="xs" x="578.2" y="122" text-anchor="middle">−30</text>
+    <text class="xs" x="712.7" y="122" text-anchor="middle">−10</text>
+    <text class="xs" x="780" y="122" text-anchor="middle">0 dBm</text>
+  </g>
+  <circle class="fill-warn" cx="342.7" cy="158" r="6"/>
+  <circle class="fill-accent" cx="410" cy="158" r="6"/>
+  <path class="ln-accent" d="M350 158 H402" marker-end="url(#ah-accent)"/>
+  <text class="xs" x="336" y="162" text-anchor="end">serving 90</text>
+  <text class="xs lbl-accent" x="418" y="162">gateway 110: +20 RCPI = +10 dB, more than the 16 needed</text>
+</svg>
+</div>
+<figcaption><b>The default policy's two numbers.</b> A client is considered only while its link is
+below RCPI 100 (−60&nbsp;dBm), and only a candidate at least 16 RCPI (8&nbsp;dB) better counts.
+Both are configuration, not code.</figcaption>
+</figure>
+</section>
+
+<section id="decide">
+<h2>Deciding</h2>
+<p>The default policy is a threshold policy with memory. For each client, every turn, it asks: is
+the current link weak, is a fresh candidate clearly better, and has that been true long enough? A
+condition must hold for five seconds before it counts, so one bad sample moves nobody. A client
+that moved is left alone for at least twenty seconds of dwell, however the numbers look.</p>
+<figure class="wide" id="fig-states">
+<div class="fig">
+<svg viewBox="0 0 820 300" role="img" aria-label="Client states: stable, holding, pending, cooldown and backoff, with the conditions between them.">
+  <rect class="box-good" x="20" y="125" width="140" height="50" rx="12"/><text class="t" x="90" y="156" text-anchor="middle">stable</text>
+  <rect class="box-warn" x="240" y="125" width="140" height="50" rx="12"/><text class="t" x="310" y="156" text-anchor="middle">holding</text>
+  <rect class="box-accent" x="460" y="125" width="140" height="50" rx="12"/><text class="t" x="530" y="156" text-anchor="middle">pending</text>
+  <rect class="box" x="660" y="40" width="140" height="50" rx="12"/><text class="t" x="730" y="71" text-anchor="middle">cooldown</text>
+  <rect class="box-bad" x="660" y="210" width="140" height="50" rx="12"/><text class="t" x="730" y="241" text-anchor="middle">backoff</text>
+
+  <path class="ln" d="M160 140 H236" marker-end="url(#ah)"/>
+  <text class="xs" x="198" y="104" text-anchor="middle">weak link and a</text>
+  <text class="xs" x="198" y="116" text-anchor="middle">better candidate</text>
+  <path class="ln" d="M240 166 H164" marker-end="url(#ah)"/>
+  <text class="xs" x="200" y="190" text-anchor="middle">condition gone</text>
+  <path class="ln-accent" d="M380 150 H456" marker-end="url(#ah-accent)"/>
+  <text class="xs lbl-accent" x="420" y="128" text-anchor="middle">held 5 s:</text>
+  <text class="xs lbl-accent" x="420" y="141" text-anchor="middle">steer</text>
+  <path class="ln-good" d="M600 138 C630 120 640 80 656 70" marker-end="url(#ah-good)"/>
+  <text class="xs lbl-good" x="590" y="96" text-anchor="end">arrived at the target</text>
+  <path class="ln-bad" d="M600 162 C630 180 640 220 656 232" marker-end="url(#ah-bad)"/>
+  <text class="xs lbl-bad" x="592" y="214" text-anchor="end">no arrival within 10 s</text>
+  <path class="ln dash" d="M730 40 C730 10 90 10 90 121" marker-end="url(#ah)"/>
+  <text class="xs" x="410" y="66" text-anchor="middle">after 30 s of cooldown (and 20 s of dwell)</text>
+  <path class="ln dash" d="M730 260 C730 300 90 300 90 179" marker-end="url(#ah)"/>
+  <text class="xs" x="410" y="250" text-anchor="middle">after 60 s, doubling with each failure up to 600 s</text>
+</svg>
+</div>
+<figcaption><b>One client's life in the policy.</b> At most one request is pending per client;
+a success earns a cooldown, a failure a growing backoff. The numbers are the default policy's.</figcaption>
+</figure>
+<p>When more than one candidate qualifies, the strongest fresh one wins; the target is always an
+exact BSSID, never "somewhere on the gateway". The policy is plain data: a versioned file of
+thresholds and timers, with a digest recorded in the journal, so a run always says which policy
+made it.</p>
+</section>
+
+<section id="reasons">
+<h2>Every "no" has a reason</h2>
+<p>Most turns end in no action, and that is the interesting part. Each decision carries a reason,
+and the journal keeps it:</p>
+<div class="table-wrap"><table>
+<thead><tr><th>Reason</th><th>What it means</th></tr></thead>
+<tbody>
+<tr><td><code>current_link_acceptable</code></td><td>the client is fine where it is</td></tr>
+<tr><td><code>candidate_gain_too_small</code></td><td>something is better, but not by enough</td></tr>
+<tr><td><code>candidate_snapshot_incomplete</code></td><td>not every candidate has a fresh answer yet</td></tr>
+<tr><td><code>current_metric_missing</code></td><td>the serving link has no usable measurement</td></tr>
+<tr><td><code>minimum_dwell_not_met</code></td><td>the client moved too recently</td></tr>
+<tr><td><code>condition_hold_not_met</code></td><td>a move looks right, but not for five seconds yet</td></tr>
+<tr><td><code>steer_pending</code></td><td>a request is in flight; wait for its outcome</td></tr>
+<tr><td><code>post_steer_cooldown</code></td><td>it just moved successfully; let it settle</td></tr>
+<tr><td><code>steer_timeout_backoff</code></td><td>the last request did not arrive in time; back off</td></tr>
+<tr><td><code>target_association_observed</code></td><td>the move happened</td></tr>
+<tr><td><code>threshold_margin_hold_satisfied</code></td><td>the one "yes": weak link, enough gain, held long enough; steer</td></tr>
+</tbody></table></div>
+<p>The journal is JSON lines, each record carrying the hash of the one before it: the snapshot,
+the decision with its reason and scores, the action, the outcome. A run can be audited after the
+fact and replayed: the same snapshots through the same policy give the same decisions.</p>
+</section>
+
+<section id="steer">
+<h2>Steering</h2>
+<p>When a decision survives the guardrails, the optimizer hands the controller one request:
+steer this client to that BSSID. In the labs this goes through each lab's own steering command,
+a narrow, validated entry point; the optimizer never reaches into the controller's internals.</p>
+<figure class="wide" id="fig-steer">
+<div class="fig">
+<svg viewBox="0 0 820 390" role="img" aria-label="Sequence: the optimizer asks the controller, the controller sends a Client Steering Request to the source agent, the agent sends a BTM request, the client accepts and reassociates with the target, the target reports the association, the optimizer verifies.">
+  <g>
+    <rect class="box-accent" x="20" y="20" width="120" height="40" rx="8"/><text class="t" x="80" y="45" text-anchor="middle">Optimizer</text>
+    <rect class="box" x="190" y="20" width="120" height="40" rx="8"/><text class="t" x="250" y="45" text-anchor="middle">Controller</text>
+    <rect class="box" x="360" y="20" width="120" height="40" rx="8"/><text class="t" x="420" y="45" text-anchor="middle">Serving agent</text>
+    <rect class="box-radio" x="530" y="20" width="120" height="40" rx="8"/><text class="t" x="590" y="45" text-anchor="middle">Client</text>
+    <rect class="box" x="690" y="20" width="120" height="40" rx="8"/><text class="t" x="750" y="45" text-anchor="middle">Target agent</text>
+  </g>
+  <path class="ln-faint dash" d="M80 60 V370 M250 60 V370 M420 60 V370 M590 60 V370 M750 60 V370"/>
+  <path class="ln-accent" d="M80 92 H246" marker-end="url(#ah-accent)"/><text class="xs lbl-accent" x="165" y="84" text-anchor="middle">steer client → BSSID</text>
+  <path class="ln" d="M250 132 H416" marker-end="url(#ah)"/><text class="xs" x="335" y="124" text-anchor="middle">Client Steering Request (1905)</text>
+  <path class="ln-radio" d="M420 172 H586" marker-end="url(#ah-radio)"/><text class="xs lbl-radio" x="505" y="164" text-anchor="middle">BTM request (802.11v)</text>
+  <path class="ln-radio" d="M590 212 H424" marker-end="url(#ah-radio)"/><text class="xs lbl-radio" x="505" y="204" text-anchor="middle">BTM response: accept</text>
+  <path class="ln" d="M420 244 H254" marker-end="url(#ah)"/><text class="xs" x="335" y="236" text-anchor="middle">steering report</text>
+  <path class="ln-radio" d="M590 280 H746" marker-end="url(#ah-radio)"/><text class="xs lbl-radio" x="668" y="272" text-anchor="middle">reassociates</text>
+  <path class="ln" d="M750 316 H254" marker-end="url(#ah)"/><text class="xs" x="500" y="308" text-anchor="middle">association notification</text>
+  <path class="ln-good dash" d="M250 352 H84" marker-end="url(#ah-good)"/><text class="xs lbl-good" x="165" y="344" text-anchor="middle">verify: target owns it, traffic flows</text>
+</svg>
+</div>
+<figcaption><b>One steer, end to end.</b> The request is a mandate to the serving agent, which
+asks the client with a BTM request naming the target. The client may still say no, or roam
+somewhere else.</figcaption>
+</figure>
+</section>
+
+<section id="verify">
+<h2>Checking that it worked</h2>
+<p>A steering request that was sent is not a client that moved. The optimizer counts a steer as
+successful only when the controller's model shows the client on the target and traffic flows
+there, within ten seconds. A client that lands on a different access point than the one asked for
+is reported as a failure at once, not after the timeout. A failure puts the client into backoff,
+sixty seconds after the first and doubling with each repeat, up to ten minutes, so a client that
+refuses to move is not asked every turn.</p>
+<aside class="note"><span class="t">Why traffic counts</span>
+<p>A controller's model can lag behind reality or keep a stale owner for a while. A client that
+passes traffic through the target has moved; a row in a table may not mean that yet.</p></aside>
+</section>
+
+<section id="guard">
+<h2>Guardrails</h2>
+<p>Above the policy sits a safety layer that does not care how good a decision looks. In the room
+service that runs the optimizer live, it enforces:</p>
+<ul>
+  <li>at most one request in flight per client, and at least five seconds between requests for a
+  client;</li>
+  <li>a ceiling on requests across the whole mesh, 300 a minute;</li>
+  <li>a pause for a client after three failures within three minutes;</li>
+  <li>a pause for a client that moved four times within a minute: an oscillation, which almost
+  always means two policies or two measurements disagree;</li>
+  <li>health gates: no action while the mesh is unhealthy or the controller's inventory is
+  incomplete.</li>
+</ul>
+<p>A paused client stays paused until an operator resumes it; the room shows why it stopped.</p>
+</section>
+
+<section id="beyond">
+<h2>Beyond signal</h2>
+<p>Signal strength on the same band is the default and the best-measured case. Other policies are
+opt-in, each with its own evidence rules:</p>
+<ul>
+  <li><strong>Band upgrade</strong> moves a client from 2.4 to 5 GHz, or 5 to 6, when the target
+  band is strong enough (RCPI 120 by default) and the loss small. Cross-band evidence cannot come
+  from the same-band listening query, so these rooms use scans the client receives, comparing
+  like with like.</li>
+  <li><strong>Load-aware balancing</strong> moves a strong client from a busy channel to a fresh,
+  quieter one. It reads the access points' own utilization reports, insists that both are recent
+  and advancing, and never treats a missing load as zero.</li>
+  <li><strong>The counter guard</strong> vetoes balancing when native retry, transmit-failure or
+  receive-drop rates say a link is struggling, whatever the load says.</li>
+  <li><strong>Pre-association recommendation</strong> suggests where a joining client should land,
+  bounded in time and probes, with a 2.4 GHz failsafe.</li>
+</ul>
+</section>
+
+<section id="stacks">
+<h2>Two stacks, one optimizer</h2>
+<p>The policy, the planners, the verifier and the journal are shared. What differs between the
+RDK controller and prplMesh is one adapter each, named in one table:</p>
+<div class="table-wrap"><table>
+<thead><tr><th>Stack</th><th>Observes through</th><th>Steers through</th></tr></thead>
+<tbody>
+<tr><td>RDK</td><td>the controller's web API (topology, clients, devices, BSSs, the unassociated-STA query)</td><td>the lab's steering command into the controller</td></tr>
+<tr><td>prplMesh</td><td>a topology adapter and the controller's northbound data model (NBAPI)</td><td>the lab's steering command into prplMesh</td></tr>
+</tbody></table></div>
+<p>Both labs pin the optimizer at the same path, next to the RF medium they also pin. When a
+policy behaves differently on the two stacks, the difference is in the stacks, which is often
+exactly what the experiment set out to find.</p>
+</section>
+
+<section id="rooms">
+<h2>The room service</h2>
+<p>An optimizer needs something to optimize. In the labs that is a <em>room</em>: one of the
+medium's compiled worlds, with clients walking, crowds arriving, extenders failing. The room
+service, the optimizer repository's second package, plays a room through the medium in time,
+keeps the clients' containers associated and on their bands, runs the optimizer against the
+controller while the room plays, and serves the live view.</p>
+<figure class="wide" id="fig-room-service">
+<div class="fig">
+<svg viewBox="0 0 820 300" role="img" aria-label="The room service plays the medium's room into wmediumd, keeps the clients, drives the optimizer against the controller and serves a live view and journal.">
+  <rect class="box" x="20" y="30" width="200" height="60" rx="10"/><text class="t" x="120" y="56" text-anchor="middle">Room plan</text><text class="xs" x="120" y="76" text-anchor="middle">the medium's compiled world</text>
+  <rect class="box" x="20" y="200" width="200" height="60" rx="10"/><text class="t" x="120" y="226" text-anchor="middle">wmediumd</text><text class="xs" x="120" y="246" text-anchor="middle">the air, tick by tick</text>
+  <rect class="box-accent" x="300" y="110" width="220" height="80" rx="12"/>
+  <text class="t" x="410" y="140" text-anchor="middle">Room service</text>
+  <text class="xs" x="410" y="160" text-anchor="middle">plays the room, keeps the clients,</text>
+  <text class="xs" x="410" y="176" text-anchor="middle">runs the optimizer</text>
+  <rect class="box-accent" x="600" y="30" width="200" height="60" rx="10"/><text class="t" x="700" y="56" text-anchor="middle">Optimizer</text><text class="xs" x="700" y="76" text-anchor="middle">observe, decide, steer, verify</text>
+  <rect class="box" x="600" y="200" width="200" height="60" rx="10"/><text class="t" x="700" y="226" text-anchor="middle">Controller</text><text class="xs" x="700" y="246" text-anchor="middle">RDK or prplMesh</text>
+  <path class="ln" d="M220 60 C260 60 270 130 296 136" marker-end="url(#ah)"/>
+  <path class="ln" d="M300 170 C270 175 260 230 224 230" marker-end="url(#ah)"/>
+  <text class="xs" x="236" y="214">each tick</text>
+  <path class="ln-accent" d="M520 136 C550 130 560 60 596 60" marker-end="url(#ah-accent)"/>
+  <path class="ln" d="M700 90 V196" marker-end="url(#ah)"/><text class="xs" x="708" y="148">observe, steer</text>
+  <path class="ln dash" d="M410 190 V250" marker-end="url(#ah)"/>
+  <rect class="box dash" x="300" y="254" width="220" height="36" rx="8"/><text class="s" x="410" y="277" text-anchor="middle">live view and journal</text>
+</svg>
+</div>
+<figcaption><b>The live room.</b> The view shows the house, the clients moving, their links and the
+steers as they happen, next to the controller's own topology page. The same room can run with the
+optimizer observing, recommending, or acting.</figcaption>
+</figure>
+<p>The room service never decides for the optimizer and never shortcuts the controller: the
+optimizer in a room sees exactly what it would see in a house, and acts through exactly the same
+command.</p>
+</section>
+
+<section id="proof">
+<h2>Proving a policy</h2>
+<p>A policy is accepted in steps, from cheap to live:</p>
+<ol>
+  <li><strong>Units and replay.</strong> The decision engine is tested on its own, and recorded
+  runs replay to identical decisions.</li>
+  <li><strong>A test double.</strong> For algorithm work without a lab, <code>simulate</code> turns a
+  compiled world into synthetic, controller-shaped snapshots through a declared sensor model. Its
+  records say they are simulated, and they never count as evidence.</li>
+  <li><strong>A case matrix.</strong> Ten golden worlds, five traffic profiles, the policy
+  configurations and seeds expand into a hash-verified matrix; a case a lab cannot run yet is an
+  explicit blocker, not a silent skip.</li>
+  <li><strong>Live acceptance.</strong> The acceptance tools run against a lab: readiness (every
+  client on its best access point at rest), the room catalog in a browser, the geometry rooms where
+  extenders lose and change their backhaul, RF, load, counter and traffic checks. Both labs' suites
+  call them from here.</li>
+</ol>
+<p>The progression in a lab mirrors that: observe only, then recommend and review, then allow
+one explicit action with its verification and backoff, and only then let it run a room.</p>
+</section>
+
+<section id="repository">
+<h2>The repository</h2>
+<div class="table-wrap"><table>
+<thead><tr><th>Part</th><th>What it is</th></tr></thead>
+<tbody>
+<tr><td><code>optimizer/</code></td><td>the observers and candidate providers, the snapshot model, the policies (threshold, band upgrade, load-aware, counter guard, pre-association), the verifier, the journal, the per-stack adapters</td></tr>
+<tr><td><code>room_service/</code></td><td>the room service: plays the medium's rooms, keeps the clients, runs the optimizer live, the steering guardrails, the live view's API</td></tr>
+<tr><td><code>configs/</code></td><td>the policies as data</td></tr>
+<tr><td><code>scenarios/</code></td><td>the case matrix over the medium's golden worlds</td></tr>
+<tr><td><code>acceptance/</code></td><td>the live acceptance and measurement tools both labs run</td></tr>
+<tr><td><code>tests/</code></td><td>units, adapters, replay, the closed-loop golden-world tests, the room service</td></tr>
+<tr><td><code>docs/</code></td><td>the architecture, operation and extension, the scenarios, band steering</td></tr>
+</tbody></table></div>
+<p>The CI tests it with the medium checked out beside it, as the labs lay them out. It runs in a
+lab VM next to the controller, never in a device image.</p>
+</section>
+
+<footer class="end">
+<p>easymesh-optimizer is developed in the <a href="https://boardfarmdevs.github.io/easymesh-labs/">EasyMesh
+labs</a>, on the <a href="https://boardfarmdevs.github.io/easymesh-medium/">RF medium</a> and in both
+labs, <a href="https://boardfarmdevs.github.io/meta-cmf-bananapi-vcpe/">RDK</a> and
+<a href="https://boardfarmdevs.github.io/prplmesh-lab/">prplMesh</a>. The source and the full
+documentation are in the <a href="https://github.com/boardfarmdevs/easymesh-optimizer">repository</a>.</p>
+</footer>
+</article>
+</div>
+</body>
+</html>

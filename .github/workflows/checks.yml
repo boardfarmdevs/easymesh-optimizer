@@ -1,6 +1,6 @@
 # The optimizer's, the room service's and the acceptance tools' checks, without a lab: their
-# tests, with the medium next to them as in the labs (optimizer/ and medium/ side by side); the labs block and
-# the documentation's links hold.
+# tests, with the medium next to them as in the labs (optimizer/ and medium/ side by side).
+# The site and the documentation check: pages.yml.
 name: checks
 on:
   push:
@@ -16,12 +16,6 @@ env:
   MEDIUM_REF: 7ebd325d0e88543fc4051a3f873b39a96c8c8eff
 
 jobs:
-  docs:
-    # the labs' shared documentation check (pages/check-docs.py, the same in every repository)
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v5
-      - run: python3 pages/check-docs.py
   tests:
     runs-on: ubuntu-24.04
     steps:

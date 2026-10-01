@@ -1,7 +1,7 @@
 # EasyMesh optimizer
 
 <!-- labs block: the same in every repository of the EasyMesh labs, but for the Site line -->
-**Site:** none of its own; the labs' is <https://boardfarmdevs.github.io/easymesh-labs/>.
+**Site:** <https://boardfarmdevs.github.io/easymesh-optimizer/>
 The [EasyMesh labs](https://boardfarmdevs.github.io/easymesh-labs/) serve three
 goals: EasyMesh optimizer development
 ([easymesh-optimizer](https://github.com/boardfarmdevs/easymesh-optimizer)) in a rich
