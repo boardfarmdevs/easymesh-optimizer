@@ -45,7 +45,7 @@
   client's other options, decides with a policy it can explain, moves one client at a time and
   checks that the move happened. This page follows one decision from the first measurement to
   the record of why it was made.</p>
-  <p class="meta"><span>About a 25-minute read</span><a href="https://github.com/boardfarmdevs/easymesh-optimizer">The repository</a><a href="https://vcpe.dev/easymesh-medium/">The RF medium it is tested on</a><a href="https://mesh.vcpe.dev/">The EasyMesh labs</a></p>
+  <p class="meta"><span>About a 30-minute read</span><a href="https://github.com/boardfarmdevs/easymesh-optimizer">The repository</a><a href="https://vcpe.dev/easymesh-medium/">The RF medium it is tested on</a><a href="https://mesh.vcpe.dev/">The EasyMesh labs</a></p>
 </header>
 
 <nav class="toc" aria-label="Contents">
@@ -66,6 +66,8 @@
     <li><a href="#stacks">Two stacks, one optimizer</a></li>
     <li><a href="#rooms">The room service</a></li>
     <li><a href="#proof">Proving a policy</a></li>
+    <li><a href="#plugins">Bring your own algorithm</a></li>
+    <li><a href="#plugin-path">From a laptop to a lab run</a></li>
     <li><a href="#data-elements">One highway: Data Elements</a></li>
     <li><a href="#app">On the router, as an application</a></li>
     <li><a href="#repository">The repository</a></li>
@@ -519,6 +521,198 @@ command.</p>
 one explicit action with its verification and backoff, and only then let it run a room.</p>
 </section>
 
+<section id="plugins">
+<h2>Bring your own algorithm</h2>
+<p>The policy above is one answer to when and where to move a client. Experimenting means trying
+others: a different margin, a load rule, something learned from data. The proposal is to make the
+algorithm a <strong>plugin</strong>: a small Python package that the optimizer loads by name, in
+the place where it builds its policy today. Nothing else moves. Observation, the measurement
+rounds, the safety gate, steering, verification and the journal stay the core's, and every
+algorithm goes through them.</p>
+<figure class="wide" id="fig-plugin-seam">
+<div class="fig">
+<svg viewBox="0 0 820 330" role="img" aria-label="The optimizer's loop: observe, then the policy slot, then the safety gate, steering and verification, and the journal. The slot holds either the built-in default policy or a plugin loaded by name; both have the same interface.">
+  <rect class="box" x="16" y="40" width="130" height="86" rx="12"/>
+  <text class="t" x="32" y="70">Observe</text>
+  <text class="s" x="32" y="92">the controller,</text>
+  <text class="s" x="32" y="110">measurements</text>
+
+  <rect class="box-soft" x="186" y="16" width="270" height="286" rx="14"/>
+  <text class="t" x="204" y="44">The policy slot</text>
+  <text class="xs" x="204" y="62">one interface: evaluate(snapshot, state)</text>
+  <rect class="box-accent" x="204" y="78" width="234" height="86" rx="10"/>
+  <text class="t" x="220" y="104">The default</text>
+  <text class="s" x="220" y="126">today's policy, built in</text>
+  <text class="xs lbl-accent" x="220" y="148">when no algorithm is named</text>
+  <rect class="box dash" x="204" y="180" width="234" height="102" rx="10"/>
+  <text class="t" x="220" y="206">A plugin</text>
+  <text class="s" x="220" y="228">a wheel, loaded by name</text>
+  <text class="s mono" x="220" y="250">sticky-best-ap@0.3.0</text>
+  <text class="xs" x="220" y="270">its own parameters</text>
+
+  <rect class="box" x="496" y="40" width="140" height="86" rx="12"/>
+  <text class="t" x="512" y="70">Safety gate</text>
+  <text class="s" x="512" y="92">rate, interval,</text>
+  <text class="s" x="512" y="110">failures, swings</text>
+  <rect class="box" x="676" y="40" width="128" height="86" rx="12"/>
+  <text class="t" x="692" y="70">Steer,</text>
+  <text class="t" x="692" y="90">verify</text>
+  <text class="s" x="692" y="112">the core's</text>
+
+  <rect class="box" x="496" y="196" width="308" height="86" rx="12"/>
+  <text class="t" x="512" y="226">Journal</text>
+  <text class="s" x="512" y="248">every snapshot and decision, and</text>
+  <text class="s" x="512" y="266">which algorithm made it</text>
+
+  <path class="ln" d="M146 83 H182" marker-end="url(#ah)"/>
+  <path class="ln-accent" d="M456 83 H492" marker-end="url(#ah-accent)"/>
+  <path class="ln" d="M636 83 H672" marker-end="url(#ah)"/>
+  <path class="ln" d="M740 126 V192" marker-end="url(#ah)"/>
+  <path class="ln" d="M456 239 H492" marker-end="url(#ah)"/>
+  <text class="xs" x="16" y="320">The room service keeps its own settings (how old a measurement may be, timeouts, cooldowns), so every algorithm is checked and scored by one rule.</text>
+</svg>
+</div>
+<figcaption><b>One slot, one interface.</b> With no algorithm named, the factory returns the policy it
+returns today, and nothing about a run changes. With a name, the same slot holds the plugin.</figcaption>
+</figure>
+<p>This is less new than it sounds. The decision is already a pure function, <code>evaluate</code>,
+that does no input or output; one factory already chooses between two algorithms; and two of the
+policies in the repository, the load-aware one and the band one, are built exactly as a plugin
+would be, by extending the default.</p>
+<h3>What a plugin is</h3>
+<div class="table-wrap"><table>
+<thead><tr><th>It provides</th><th>For</th></tr></thead>
+<tbody>
+<tr><td><code>evaluate(snapshot, state)</code></td><td>one decision per client, steer or not, and the new state</td></tr>
+<tr><td><code>requires_candidate_measurement</code></td><td>which clients are worth measuring this round</td></tr>
+<tr><td><code>config</code></td><td>the lab's settings, unchanged: the room service applies them to every algorithm</td></tr>
+<tr><td><code>api = "policy-api/1"</code></td><td>the version of this interface; another is refused</td></tr>
+</tbody></table></div>
+<p>The smallest plugin reuses the default's machinery with settings of its own, chosen per run:</p>
+<pre><code>class MarginHold(ThresholdPolicy):
+    api = "policy-api/1"
+
+    def __init__(self, config, parameters):
+        super().__init__(config)          # the lab's settings, for the room service
+        self._decide = ThresholdPolicy(replace(config,
+            minimum_target_gain_rcpi=int(parameters["margin_rcpi"]),
+            condition_hold_seconds=float(parameters["hold_seconds"])))
+
+    def evaluate(self, snapshot, prior=None):
+        return self._decide.evaluate(snapshot, prior)</code></pre>
+<p>A plugin may also write <code>evaluate</code> from scratch. It must then respect the lifecycle the
+room service tracks for each client: no new steer while one is pending, cooling down or backing
+off. Whatever it decides, it decides as a pure function: no network, no files beyond its own, no
+clock but the snapshot's, the same answer for the same input, and within a time budget.</p>
+<p>Version 1 replaces the client steering policy. The band rooms' profiled clients and the
+planners (backhaul, channel width, pre-association) keep their built-in code.</p>
+<aside class="note"><span class="t">The default, exactly</span>
+<p>With no algorithm named, the same code runs and the journals are the same, byte for byte. Four
+things must keep holding: the tests pass unchanged; recorded runs replay to identical journals; the
+default packed as a plugin gives the same decisions through the plugin path as through the direct
+one; and both labs' room catalogs pass as now.</p></aside>
+</section>
+
+<section id="plugin-path">
+<h2>From a laptop to a lab run</h2>
+<p>A plugin is written and proven away from the lab, and the lab only runs what has been checked.
+Three places, one package travelling between them.</p>
+<figure class="wide" id="fig-plugin-path">
+<div class="fig">
+<svg viewBox="0 0 820 330" role="img" aria-label="A plugin is prepared on a laptop (new, write, check against recorded lab runs, pack), carried as a wheel with its check report to a lab host, installed after the lab repeats the checks, selected for a room run, and the run's journal comes back to the laptop for replay.">
+  <rect class="box-soft" x="16" y="16" width="250" height="270" rx="14"/>
+  <text class="t" x="32" y="44">A laptop</text>
+  <text class="xs" x="32" y="62">a fresh Python, the optimizer, nothing else</text>
+  <text class="s mono" x="32" y="96">plugin new</text>
+  <text class="xs" x="32" y="114">a package to start from</text>
+  <text class="s mono" x="32" y="140">replay, simulate</text>
+  <text class="xs" x="32" y="158">recorded lab runs, synthetic worlds</text>
+  <text class="s mono" x="32" y="184">plugin check</text>
+  <text class="xs" x="32" y="202">contract, purity, determinism, time</text>
+  <text class="s mono" x="32" y="228">plugin pack</text>
+  <text class="xs" x="32" y="246">a wheel and its check report</text>
+
+  <rect class="box-soft" x="300" y="16" width="230" height="270" rx="14"/>
+  <text class="t" x="316" y="44">The lab host</text>
+  <text class="xs" x="316" y="62">by hand, offline or over SSH;</text>
+  <text class="xs" x="316" y="76">later through the gateway</text>
+  <text class="s mono" x="316" y="96">plugin install</text>
+  <text class="xs" x="316" y="114">checks the hash and the report</text>
+  <text class="xs" x="316" y="132">repeats the checks on this lab's runs</text>
+  <rect class="box-radio" x="316" y="156" width="198" height="110" rx="10"/>
+  <text class="s lbl-radio" x="330" y="180">in the lab VM</text>
+  <text class="xs mono" x="330" y="204">plugins/sticky-best-ap/</text>
+  <text class="xs mono" x="346" y="222">0.3.0/  the wheel,</text>
+  <text class="xs mono" x="346" y="240">both check reports</text>
+
+  <rect class="box-soft" x="564" y="16" width="240" height="270" rx="14"/>
+  <text class="t" x="580" y="44">A room run</text>
+  <text class="xs" x="580" y="62">the same rooms the default runs</text>
+  <text class="s mono" x="580" y="96">"algorithm":</text>
+  <text class="s mono" x="596" y="116">"sticky-best-ap@0.3.0"</text>
+  <text class="xs" x="580" y="136">in the room manifest, or --algorithm</text>
+  <text class="s" x="580" y="178">decides through the slot;</text>
+  <text class="s" x="580" y="198">gated, steered, verified</text>
+  <text class="s" x="580" y="218">by the core</text>
+  <text class="xs" x="580" y="250">result: the room's verdict next to</text>
+  <text class="xs" x="580" y="266">the default's</text>
+
+  <path class="ln-accent" d="M266 120 H296" marker-end="url(#ah-accent)"/>
+  <text class="xs lbl-accent" x="281" y="110" text-anchor="middle">wheel</text>
+  <path class="ln-accent" d="M530 120 H560" marker-end="url(#ah-accent)"/>
+  <path class="ln dash" d="M684 286 V312 H140 V290" marker-end="url(#ah)"/>
+  <text class="xs" x="412" y="306" text-anchor="middle">the run's journal comes back and replays at home, decision by decision</text>
+</svg>
+</div>
+<figcaption><b>Prepared away, judged in the lab.</b> Most of the work happens on the laptop against
+recorded runs; lab time goes to runs that count.</figcaption>
+</figure>
+<p><strong>Preparing.</strong> The optimizer package is the kit: it has no dependencies, so a fresh
+virtual environment with nothing else in it is enough. Recorded room runs of both labs, published
+with the optimizer's releases, give a plugin the snapshots a real controller produced;
+<code>replay</code> runs it over them and <code>compare</code> shows where it differs from the default
+and why. The check then runs, in a clean environment, everything a lab will ask:</p>
+<ul>
+  <li>a pure-Python wheel with one entry point and no dependencies;</li>
+  <li>every decision well formed, and none for a client that is mid-action;</li>
+  <li>no network, process or file access while it runs, watched by an audit hook;</li>
+  <li>two replays identical, byte for byte; the state surviving a round trip;</li>
+  <li>every evaluation within the time budget; odd snapshots answered, not crashed on.</li>
+</ul>
+<p><strong>Deploying.</strong> The wheel and its report go to the lab host however is convenient: a
+file share, a USB stick, SSH. One command checks the hash and the report, repeats the checks against
+that lab's own recorded runs, and places the plugin in a directory of the lab VM. No image is built,
+no VM restarted, no optimizer changed. Later, developers with an account upload through the
+<a href="https://vcpe.dev/easymesh-remote/">remote access gateway</a> instead.</p>
+<p><strong>Running.</strong> A room run names the plugin and its version. The room service loads
+that one plugin, records in the journal which algorithm decided (a run without a plugin records
+nothing new), and runs the same rooms with the same pass criteria as for the default. A plugin that
+fails to load leaves the room without an optimizer; one that raises costs that step's decision, and
+three in a row stop it for the run.</p>
+<aside class="note limit"><span class="t">Trusted code first</span>
+<p>Loaded into the room service, a plugin runs with the room service's rights: it could read what
+the optimizer must not know, the room's true positions. The checks catch accidents, not intent. So
+the first stages are for the team and partners under agreement. For outside developers the same
+plugin runs in its own sandboxed process behind a stand-in with the same interface, and then comes
+with uploads, a queue and reports: the
+<a href="https://github.com/boardfarmdevs/easymesh-optimizer/blob/main/docs/proposals/optimizer-workbench.md">workbench</a>
+designs those stages.</p></aside>
+<div class="table-wrap"><table>
+<thead><tr><th>Stage</th><th>Who writes plugins</th><th>Where they run</th></tr></thead>
+<tbody>
+<tr><td class="num">1</td><td>the team</td><td>in-process, in replay, evaluate and simulate</td></tr>
+<tr><td class="num">2</td><td>the team and partners</td><td>in-process, in the labs' room service</td></tr>
+<tr><td class="num">3</td><td>partners</td><td>a sandboxed process with no network, behind a stand-in with the same interface</td></tr>
+<tr><td class="num">4</td><td>outside developers</td><td>as 3, uploaded through the gateway, with a queue and reports</td></tr>
+<tr><td class="num">5</td><td>anyone writing to a standard</td><td>as 4, seeing the controller as Data Elements</td></tr>
+</tbody></table></div>
+<p>The changes the first two stages need are small: a loader, one factory that every caller uses
+and that returns today's policy when no name is given, an option and a manifest key, and one journal
+record. The design, the checks in full, the stages and the experiments are in
+<a href="https://github.com/boardfarmdevs/easymesh-optimizer/blob/main/docs/proposals/algorithm-plugins.md">the
+proposal</a>.</p>
+</section>
+
 <section id="data-elements">
 <h2>One highway: Data Elements</h2>
 <p>Everything above describes the optimizer as it runs in the labs today, and today it reaches
@@ -674,7 +868,7 @@ these two sections has changed.</p>
 <tr><td><code>scenarios/</code></td><td>the case matrix over the medium's golden worlds</td></tr>
 <tr><td><code>acceptance/</code></td><td>the live acceptance and measurement tools both labs run</td></tr>
 <tr><td><code>tests/</code></td><td>units, adapters, replay, the closed-loop golden-world tests, the room service</td></tr>
-<tr><td><code>docs/</code></td><td>the architecture, operation and extension, the scenarios, band steering, the proposal for the application</td></tr>
+<tr><td><code>docs/</code></td><td>the architecture, operation and extension, the scenarios, band steering, the proposals for algorithm plugins, the workbench and the application</td></tr>
 </tbody></table></div>
 <p>The CI tests it with the medium checked out beside it, as the labs lay them out. Today it runs
 in a lab VM next to the controller, never in a device image; the <a href="#app">application</a> is

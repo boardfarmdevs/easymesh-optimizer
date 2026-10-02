@@ -79,4 +79,5 @@ The [site](https://vcpe.dev/easymesh-optimizer/) explains how the
 optimizer observes, decides, steers and verifies. The documents are indexed in
 [docs/README.md](docs/README.md): the architecture, the manual (operate and extend it),
 the opt-in load policy, the scenario suite, the band-steering qualification, and the
-proposal to run the optimizer as an application on Data Elements.
+proposals: algorithms as plugins (and the workbench for their later stages), and the
+optimizer as an application on Data Elements.
