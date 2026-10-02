@@ -1,6 +1,6 @@
 # External optimizer architecture
 
-[Optimizer README](../README.md)
+[Documents](../README.md)
 
 ## Purpose and ownership
 
@@ -10,7 +10,7 @@ OneWifi, WebUI and wmediumd processes.
 
 For installation, operating commands, input schemas, adapter examples and
 policy extension, use the companion [optimizer user and extension
-manual](development.md).
+manual](../guides/manual.md).
 
 The optimizer owns all optimization behavior:
 
@@ -403,7 +403,7 @@ than evaluating partial candidates.
 | --- | --- | --- | --- | --- |
 | current association | topology notifications, Associated Clients repair | current STA owner and BSSID | `/clients` | use now |
 | associated-link RCPI/rates/counters | periodic AP Metrics Response and Associated STA Link Metrics | persisted with report receipt time | `/clients` with receipt time | use now with freshness gate |
-| AP/BSS utilization | Modeled hwsim survey → HAL → OneWifi → native AP/Radio Metrics; periodic and utilization-crossing reports | native report fields and receipt time | read-only native load collector; POST `/api/v1/ap_metrics_query` submits `{AlMac, BSSIDs}` | HTTP 202 means submitted, not measured; native replies preserve query MID and BSSID selection; [RF qualification](https://github.com/boardfarmdevs/meta-cmf-bananapi-vcpe/blob/main/doc/easymesh/reference/testing/room-acceptance.md#rdk-threshold-and-query-qualification) |
+| AP/BSS utilization | Modeled hwsim survey → HAL → OneWifi → native AP/Radio Metrics; periodic and utilization-crossing reports | native report fields and receipt time | read-only native load collector; POST `/api/v1/ap_metrics_query` submits `{AlMac, BSSIDs}` | HTTP 202 means submitted, not measured; native replies preserve query MID and BSSID selection; RF qualification (in [meta-cmf-bananapi-vcpe](https://vcpe.dev/meta-cmf-bananapi-vcpe/)) |
 | candidate BSS identity | device/radio/BSS model | BSSList contains target identities | `/bsses` returns 30 fronthaul identities across five devices and three bands | use now; unknown quality remains unknown |
 | Unassociated STA Link Metrics | Profile-3 CMDU, OneWifi method/event and hwsim provider | controller correlates MID, Agent/RUID, STA, opclass, channel, RCPI and receipt time | POST `/api/v1/unassoc_sta_query` waits for and returns correlated measurements | use now for same-band hwsim with explicit simulator opt-in |
 | Beacon Metrics | query/response handlers and agent RBus beacon-report path exist | raw measurement-report elements are copied into the STA model | no external query/result API and no decoded candidate RCPI | evaluate after unassociated metrics; decode only required fields |
@@ -447,7 +447,7 @@ Frequency-qualified RF, metric receipt time and same-band candidate collection
 are accepted, as is the five-Agent/20-client mixed profile. Cross-band
 evidence, load traffic, controlled BTM response, backhaul actions, channel
 width and the 50/100-client profiles must not be inferred from configuration
-alone. See [optimizer scenarios](scenarios.md).
+alone. See [optimizer scenarios](../reference/scenarios.md).
 
 ### Test ladder
 
@@ -486,4 +486,4 @@ Require these gates for each new optimizer qualification:
 
 The room displays optimizer state, but the browser is not the decision engine.
 `Optimize Layout`, canned metrics and generic steering presets are not policy
-decisions. See [room coordination](https://github.com/boardfarmdevs/meta-cmf-bananapi-vcpe/blob/main/doc/easymesh/reference/rooms/architecture.md) for live authority.
+decisions. See room coordination (in [meta-cmf-bananapi-vcpe](https://vcpe.dev/meta-cmf-bananapi-vcpe/)) for live authority.

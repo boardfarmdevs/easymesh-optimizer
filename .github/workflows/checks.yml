@@ -13,7 +13,7 @@ permissions:
 
 env:
   # easymesh-medium at the commit the labs pin
-  MEDIUM_REF: 7ebd325d0e88543fc4051a3f873b39a96c8c8eff
+  MEDIUM_REF: de26993f5b683cc972c3538a9c6ba2ca8b323f7e
 
 jobs:
   tests:

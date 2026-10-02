@@ -3,7 +3,7 @@
  * sites, linking every project's site. The projects serve three goals, EasyMesh
  * optimizer development, the OpenSync adapter and EasyMesh on physical hardware, on
  * the way to one EasyMesh system on wmediumd with native agents and OpenSync pods
- * together; the RF medium is shared by the labs.
+ * together; the RF medium and the resources are shared by the labs.
  *
  * Shared: the same file (pages/labs-bar.js) in every repository with a site, the
  * umbrella easymesh-labs (whose site the home link opens) and each project listed
@@ -79,9 +79,17 @@
           name: 'RF medium',
           about: 'Virtual radios, wmediumd and the rooms: the radio medium both optimizer labs run on',
         },
+        {
+          repo: 'easymesh-resources',
+          name: 'Resources',
+          about: "Shared material for the labs: the MV3 EasyMesh footprint and the production plan",
+        },
       ],
     },
   ];
+  // The sites are on the labs' own domains: the umbrella at mesh.vcpe.dev, every other
+  // project at vcpe.dev/<repository>/ (OWNER.github.io redirects to them).
+  const site = (repo) => (repo === HOME ? 'https://mesh.vcpe.dev/' : `https://vcpe.dev/${repo}/`);
   const script = document.currentScript;
   const current = script ? script.dataset.project : '';
   if (document.getElementById('labs-bar')) return;
@@ -138,14 +146,16 @@ html[data-theme="dark"] #labs-bar, #labs-bar.lb-dark {
 #labs-bar .lb-source { margin-left: auto; color: var(--lb-muted); }
 #labs-bar .lb-short { display: none; }
 #labs-bar .lb-full { display: inline; }
-@media (max-width: 1520px) {
+@media (max-width: 1760px) {
   #labs-bar .lb-full { display: none; }
   #labs-bar .lb-short { display: inline; }
 }
+@media (max-width: 1366px) {
+  #labs-bar a { padding-left: 5px; padding-right: 5px; }
+  #labs-bar .lb-group { margin-left: 7px; padding-left: 7px; }
+}
 @media (max-width: 640px) {
   #labs-bar .lb-row { padding: 0 12px; }
-  #labs-bar .lb-home { display: none; }
-  #labs-bar .lb-group:first-of-type { margin-left: 0; padding-left: 0; border-left: 0; }
   #labs-bar .lb-group { margin-left: 8px; padding-left: 8px; }
   #labs-bar .lb-full { display: none; }
   #labs-bar .lb-short { display: inline; }
@@ -165,7 +175,7 @@ html[data-theme="dark"] #labs-bar, #labs-bar.lb-dark {
   nav.setAttribute('aria-label', 'Lab projects');
   const row = document.createElement('div');
   row.className = 'lb-row';
-  const home = link(`https://${OWNER}.github.io/${HOME}/`, `${OWNER} labs`, 'lb-home', GOAL);
+  const home = link(site(HOME), 'EasyMesh labs', 'lb-home', GOAL);
   if (current === HOME) home.setAttribute('aria-current', 'page');
   row.append(home);
   let known = current === HOME;
@@ -186,7 +196,7 @@ html[data-theme="dark"] #labs-bar, #labs-bar.lb-dark {
     label.append(full, short);
     box.append(label);
     for (const project of group.projects) {
-      const a = link(`https://${OWNER}.github.io/${project.repo}/`, project.name, '', project.about);
+      const a = link(site(project.repo), project.name, '', project.about);
       if (project.repo === current) {
         a.setAttribute('aria-current', 'page');
         known = true;
@@ -199,6 +209,7 @@ html[data-theme="dark"] #labs-bar, #labs-bar.lb-dark {
   nav.append(row);
   document.head.append(style);
   document.body.prepend(nav);
+
   // Match the page, not only the system theme: a site that is always dark gets
   // the dark bar. Uses the first opaque background colour of body, then html;
   // with only a background image, light body text means a dark page.

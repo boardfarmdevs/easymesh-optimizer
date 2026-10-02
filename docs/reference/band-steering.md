@@ -1,11 +1,10 @@
 # Band-steering integration and qualification
 
-[Optimizer README](../README.md) · [Room acceptance (RDK lab)](https://github.com/boardfarmdevs/meta-cmf-bananapi-vcpe/blob/main/doc/easymesh/reference/testing/room-acceptance.md)
+[Documents](../README.md) · Room acceptance (RDK lab) (in [meta-cmf-bananapi-vcpe](https://vcpe.dev/meta-cmf-bananapi-vcpe/))
 
 ## Status and scope
 
-Implemented and deployed on RDK/rev140 and prplMesh/rev150, `codex/0913-clean`.
-The September 15, 2026 UTC short qualification passes all three dedicated band
+Implemented in both labs. The short qualification of 15 September 2026 passes all three dedicated band
 rooms, both new received same-band rooms and six other selected rooms on each
 backend, with independent physical-owner and WLAN traffic probes. This is a
 targeted eleven-room run, not a full 25-room catalog or long-term soak.
@@ -26,7 +25,7 @@ policy, with a one-second new-scan hold, three-second dwell and two-second age
 budget. Missing serving reception fails closed, and unknown/absent candidates
 do not acquire HAL-matrix values. Both rooms now pass initial, checkpoint and
 final native ownership/traffic and room/topology checks on both backends.
-See [RF work and measured results](https://github.com/boardfarmdevs/easymesh-medium/blob/main/docs/reference/virtual-rf-assessment.md#127-rf-increments-and-short-qualification).
+See RF work and measured results (in [easymesh-medium](https://vcpe.dev/easymesh-medium/)).
 
 Only explicitly profiled room clients gain cross-band eligibility. The scanner
 reads each client's kernel radio capabilities and supplicant security capabilities.
@@ -168,7 +167,7 @@ names: `sta_static_02` is not the same client cohort in both stacks.
 
 ## Required acceptance
 
-Use the room acceptance runner ([RDK lab](https://github.com/boardfarmdevs/meta-cmf-bananapi-vcpe/blob/main/gen/tests/room-feature-acceptance.js), [prplMesh lab](https://github.com/boardfarmdevs/prplmesh-lab/blob/main/tests/room-feature-acceptance.js))
+Use the room acceptance runner (RDK lab (meta-cmf-bananapi-vcpe `gen/tests/room-feature-acceptance.js`), prplMesh lab (prplmesh-lab `tests/room-feature-acceptance.js`))
 with the three catalog IDs passed as repeated `--world` arguments. Run both
 backends independently, preferably concurrently. Preserve failed output
 directories and use a new empty output directory for each attempt.
@@ -202,18 +201,18 @@ weakening any old scenario's checks. No new thin tar or box is part of this work
 | Dedicated live rooms | 3/3, repeated with strengthened physical-owner probes | 3/3 after the native Agent fix and clean native restart |
 | Full original plus new room regression | 17/17 | 17/17 after native Agent fix and clean native restart |
 
-Evidence is retained under `/home/rev/work/band-steering-0913` on rev150, outside
-the repositories. `rdk-all-rooms-passive/results/report.json` passes all original
-and new scenarios; `rdk-band-namespace-qualification/results/report.json` repeats
+The evidence is kept outside the repositories. The RDK lab's
+`rdk-all-rooms-passive` report passes all original
+and new scenarios; `rdk-band-namespace-qualification` repeats
 the three dedicated rooms with station-identity and before/after owner checks.
 Both preserve native process identities throughout each measured suite and
 restore the default twenty clients afterward. The report auditor reconstructs
 the required twelve band transitions from native action and verification events;
 extra transitions, unverified actions and pinned-control band changes fail.
-The corresponding prpl repeat is `prpl-band-clean-native/results/report.json`;
+The corresponding prplMesh repeat is `prpl-band-clean-native`;
 its independent auditor also passes, with twelve required band changes verified.
 The full prpl result is
-`prpl-all-rooms-passive-clean-native/results/report.json`.
+`prpl-all-rooms-passive-clean-native`.
 Both full runs' `audited-summary.json` report `qualificationPassed=true`, all
 seventeen rooms tested and passed, unchanged native identities, no browser errors
 or SSE gaps, and successful default-world restoration. RDK's window is

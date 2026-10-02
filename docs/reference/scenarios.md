@@ -1,6 +1,6 @@
 # Optimizer scenario and experiment suite
 
-[Optimizer README](../README.md)
+[Documents](../README.md)
 
 ## Objective
 
@@ -130,15 +130,15 @@ requirements are already available. It does not mean that all 56 combinations
 have run live. Band-steering cases remain blocked on the distinct cross-band
 capability.
 
-Compile the stationary latency plan using the supplied legacy-named fixture
-after checking its bindings against the target lab:
+Compile the stationary latency plan with the RDK lab's bindings (check them against
+the target lab first):
 
 ```sh
 case_id='cartesian-home--home-five-agent--stationary--latency-probe--threshold-policy--seed-1701'
 python3 -m optimizer.cli traffic-plan \
   --matrix scenarios/generated/home-suite.matrix.json \
   --case "$case_id" \
-  --bindings scenarios/rev130-small-bindings.json \
+  --bindings scenarios/rdk-small-bindings.json \
   --output /tmp/stationary-latency.traffic.json
 jq '{status, duration_ms, events: (.events | length), plan_sha256}' \
   /tmp/stationary-latency.traffic.json
@@ -148,7 +148,6 @@ The role binding is explicit: gateway, four extenders, ten fixed private
 clients and ten mobile IoT clients map to the fixture's container names. The
 bindings also name the lab's traffic target (`traffic_target`, where the
 clients' traffic goes); a profile's schedule may name its own.
-The `rev130` filename is not a current host address or deployment qualification.
 A larger world fails plan compilation until its additional roles have real
 containers and a profile is accepted.
 

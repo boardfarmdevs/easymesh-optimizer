@@ -14,13 +14,14 @@ def main():
     parser = argparse.ArgumentParser(description="Bounded room-service crash recovery; native services stay running.")
     parser.add_argument("--flavor", choices=("rdk", "prpl"), required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--host", required=True, help="the host of the lab VM (ssh)")
+    parser.add_argument("--vm", required=True, help="the lab VM")
+    parser.add_argument("--url", required=True, help="the room service, e.g. http://HOST:PORT")
     parser.add_argument("--yes-act", action="store_true", required=True)
     args = parser.parse_args()
-    settings = {
-        "rdk": ("rev140", "rdkeasymesh-20-0908", "easymesh-room-service", "http://192.168.2.140:48891", "/run/easymesh-room-service/recovery.json"),
-        "prpl": ("rev150", "prplmesh-20-0908", "prplmesh-room-service", "http://192.168.2.150:18891", "/run/prplmesh-room-service/recovery.json"),
-    }
-    host, machine, service, url, recovery_path = settings[args.flavor]
+    service = {"rdk": "easymesh-room-service", "prpl": "prplmesh-room-service"}[args.flavor]
+    host, machine, url = args.host, args.vm, args.url.rstrip("/")
+    recovery_path = f"/run/{service}/recovery.json"
     args.output.mkdir(parents=True, exist_ok=False)
     report = {"flavor": args.flavor, "passed": False, "started": time.time()}
 

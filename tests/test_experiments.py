@@ -75,7 +75,7 @@ def test_matrix_tamper_is_detected():
 
 
 @pytest.mark.parametrize(("bindings_file", "client", "target"), [
-    ("rev130-small-bindings.json", "wlan-client", "10.0.0.1"),
+    ("rdk-small-bindings.json", "wlan-client", "10.0.0.1"),
     ("prpl-small-bindings.json", "prpl-client-01", "192.168.77.1"),
 ])
 def test_small_latency_traffic_plan_is_bound_and_deterministic(bindings_file, client, target):
@@ -106,5 +106,5 @@ def test_idle_traffic_plan_has_no_processes():
         and item["world"]["mobility"] == "stationary"
         and item["traffic"]["id"] == "idle-keepalive"
     )
-    bindings = json.loads((ROOT / "scenarios" / "rev130-small-bindings.json").read_text())
+    bindings = json.loads((ROOT / "scenarios" / "rdk-small-bindings.json").read_text())
     assert compile_traffic_plan(matrix, case["id"], bindings)["events"] == []

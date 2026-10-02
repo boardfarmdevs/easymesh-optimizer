@@ -1,6 +1,6 @@
 # External optimizer user and extension manual
 
-[Optimizer README](../README.md)
+[Documents](../README.md)
 
 ## Purpose and boundary
 
@@ -110,8 +110,9 @@ The practical simulation vocabulary is:
 
 Traffic generation is orthogonal to RF geometry. Multiplying deterministic RF
 worlds by deterministic traffic profiles produces repeatable experiments
-without making wmediumd pretend to be an application-load generator. See
-`wmediumd.md` for the detailed frame model and `optimizer-scenarios.md` for the
+without making wmediumd pretend to be an application-load generator. The
+wmediumd internals (in [easymesh-medium](https://vcpe.dev/easymesh-medium/))
+have the detailed frame model and [the scenario suite](../reference/scenarios.md) the
 world-by-traffic test matrix.
 
 Current implemented domains are:
@@ -228,8 +229,9 @@ of at most 64 STAs (the controller data-model limit, and OneWifi's per-channel
 limit with ccsp-one-wifi 0040), and queries those
 transactions sequentially. An all-client cycle is complete only when every
 eligible client in the current 20-client topology has a fresh associated-link
-sample and every required candidate transaction succeeds. Incomplete cycles
-must not produce actions. `--interval` is the delay after a completed cycle,
+sample and every required candidate transaction succeeds. The accepted 20-client
+cycle takes 19 transactions and returns all 80 same-band alternate-BSSID
+measurements. Incomplete cycles must not produce actions. `--interval` is the delay after a completed cycle,
 not a fixed wall-clock sampling period. Inspect printed decisions and the
 journal. A healthy but ineligible cycle is a successful no-action result with
 an explicit reason.
@@ -603,7 +605,21 @@ em-optimizer matrix \
 Worlds and traffic profiles are independent evaluator axes. `traffic-plan`
 binds a matrix case to actual containers. `simulate` converts a golden world
 through an explicit synthetic sensor model and is never a substitute for live
-EasyMesh measurements.
+EasyMesh measurements. Its records use `simulated://` and `simulated_*` sources
+and state `live_observer_compatible: false`. A deterministic band walk with one
+client ignoring BTM requests:
+
+```sh
+em-optimizer simulate \
+  --world ../medium/configurator/worlds/golden/home-a-band-walk-small.world.json \
+  --policy configs/band-upgrade-policy.yaml \
+  --initial-band 2.4 \
+  --client-behavior sta_static_01=ignore \
+  --output /tmp/home-band-sim.json
+jq '{truth_boundary, summary}' /tmp/home-band-sim.json
+```
+
+The same command and inputs give the same simulation hash.
 
 ## Backhaul and channel-width inputs
 
@@ -681,3 +697,43 @@ not merge live policy state.
 The policy and scenario core is shared; the RDK adapter (`observer.py`,
 `candidates.py`) and the prplMesh adapter (`prplmesh.py`, `lxd_ubus.py`) are
 the per-stack parts. A new pin is requalified in both labs.
+
+### The prplMesh path
+
+```text
+NBAPI topology + associated RCPI
+          +
+Unassociated STA Link Metrics candidate RCPI
+          -> normalized snapshot -> policy -> recommend
+                                      |
+                                      +-> explicit act -> BTMRequest -> verify
+```
+
+Root-in-VM candidate collection runs the same native `ubus` calls through
+descriptor-pinned controller mount and root namespaces. LXD discovers the controller
+once, not once per registration or query. Four registration workers stay bounded;
+only discovery is locked. Native publication timestamps, freshness and RPC deadlines
+are unchanged, and transactions record the transport and elapsed time. Non-root hosts
+keep `lxc exec`. Namespace failures never silently fall back; restart observation
+after a controller restart to discard its registration cache.
+
+On compatible native builds, `_describe` advertises the optional boolean
+`AddUnassociatedStation.defer_query`. Collection then registers a cohort without
+issuing a fleet-wide query for every addition, uses the explicit
+`UpdateUnassociatedStationsStats` and waits for fresh native reports. Older
+controllers keep their original behavior; no unsupported option is sent. A streaming
+round asks for one band's clients at a time, as the prplMesh lab was qualified.
+
+Recommend in the prplMesh lab (from `optimizer`):
+
+```sh
+em-optimizer recommend \
+  --backend prplmesh \
+  --candidate-provider controller --allow-simulated-candidates \
+  --policy configs/threshold-policy.yaml \
+  --count 10 --interval 1 --journal /tmp/prpl-recommend.jsonl
+```
+
+`--candidate-timeout` bounds one complete candidate transaction (30 seconds by
+default) and `--expected-clients` overrides the policy's client count for a larger
+lab profile.

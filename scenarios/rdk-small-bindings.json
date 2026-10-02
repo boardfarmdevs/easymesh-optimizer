@@ -1,6 +1,6 @@
 {
   "schema": "optimizer.lab-bindings.v1",
-  "name": "rev130-small",
+  "name": "rdk-small",
   "traffic_target": "10.0.0.1",
   "roles": {
     "gateway": "bpibroadband",
