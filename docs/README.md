@@ -13,3 +13,4 @@ works, for a newcomer. These documents go further:
 | [Scenario suite](reference/scenarios.md) | reference | the pseudo-worlds, traffic and scale axes, the case matrix and each scenario family's capability boundary |
 | [Room access](reference/room-access.md) | reference | how a browser reaches a lab's live room: on a LAN, through a tunnel, behind a gateway; the Pages boundary |
 | [Band steering](reference/band-steering.md) | reference | the band-steering measurement path, its rooms, required acceptance and qualified results |
+| [The optimizer as an application](proposals/optimizer-as-an-app.md) | proposal | what stands between today's optimizer and one that runs as a downloadable application inside the apps framework, speaking only Data Elements: the problems found, their fixes and alternatives, the design, the experiments |

@@ -78,4 +78,5 @@ In a lab VM, observe first, then recommend, then act explicitly; the
 The [site](https://vcpe.dev/easymesh-optimizer/) explains how the
 optimizer observes, decides, steers and verifies. The documents are indexed in
 [docs/README.md](docs/README.md): the architecture, the manual (operate and extend it),
-the opt-in load policy, the scenario suite and the band-steering qualification.
+the opt-in load policy, the scenario suite, the band-steering qualification, and the
+proposal to run the optimizer as an application on Data Elements.

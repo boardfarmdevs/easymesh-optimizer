@@ -45,7 +45,7 @@
   client's other options, decides with a policy it can explain, moves one client at a time and
   checks that the move happened. This page follows one decision from the first measurement to
   the record of why it was made.</p>
-  <p class="meta"><span>About a 20-minute read</span><a href="https://github.com/boardfarmdevs/easymesh-optimizer">The repository</a><a href="https://vcpe.dev/easymesh-medium/">The RF medium it is tested on</a><a href="https://mesh.vcpe.dev/">The EasyMesh labs</a></p>
+  <p class="meta"><span>About a 25-minute read</span><a href="https://github.com/boardfarmdevs/easymesh-optimizer">The repository</a><a href="https://vcpe.dev/easymesh-medium/">The RF medium it is tested on</a><a href="https://mesh.vcpe.dev/">The EasyMesh labs</a></p>
 </header>
 
 <nav class="toc" aria-label="Contents">
@@ -66,6 +66,8 @@
     <li><a href="#stacks">Two stacks, one optimizer</a></li>
     <li><a href="#rooms">The room service</a></li>
     <li><a href="#proof">Proving a policy</a></li>
+    <li><a href="#data-elements">One highway: Data Elements</a></li>
+    <li><a href="#app">On the router, as an application</a></li>
     <li><a href="#repository">The repository</a></li>
   </ol>
 </nav>
@@ -517,6 +519,150 @@ command.</p>
 one explicit action with its verification and backoff, and only then let it run a room.</p>
 </section>
 
+<section id="data-elements">
+<h2>One highway: Data Elements</h2>
+<p>Everything above describes the optimizer as it runs in the labs today, and today it reaches
+each controller through whatever door the lab had: a web API, a steering script, a listening
+socket on the IEEE 1905 traffic, the controller's bus from outside its container. That is fine
+for a lab and useless on a router. The proposal is one rule: the optimizer reads and asks through
+<strong>Data Elements</strong> only, the Wi-Fi Alliance's data model for a mesh, which TR-181
+carries as <code>Device.WiFi.DataElements.</code></p>
+<figure class="wide" id="fig-highway">
+<div class="fig">
+<svg viewBox="0 0 820 290" role="img" aria-label="Today the optimizer reaches a controller through four different doors; the proposal is one interface, Data Elements, for reads, commands and events.">
+  <text class="s" x="16" y="24">today: a door per need</text>
+  <rect class="box-accent" x="16" y="40" width="130" height="220" rx="12"/>
+  <text class="t" x="81" y="146" text-anchor="middle">Optimizer</text>
+  <rect class="box" x="290" y="40" width="110" height="220" rx="12"/>
+  <text class="t" x="345" y="146" text-anchor="middle">Controller</text>
+  <path class="ln" d="M146 78 H286" marker-end="url(#ah)"/><text class="xs" x="216" y="70" text-anchor="middle">a lab web API</text>
+  <path class="ln" d="M146 128 H286" marker-end="url(#ah)"/><text class="xs" x="216" y="120" text-anchor="middle">a steering script</text>
+  <path class="ln" d="M146 178 H286" marker-end="url(#ah)"/><text class="xs" x="216" y="170" text-anchor="middle">a raw IEEE 1905 socket</text>
+  <path class="ln" d="M146 228 H286" marker-end="url(#ah)"/><text class="xs" x="216" y="220" text-anchor="middle">the bus, from outside</text>
+
+  <text class="s" x="450" y="24">proposed: one interface</text>
+  <rect class="box-accent" x="450" y="40" width="130" height="220" rx="12"/>
+  <text class="t" x="515" y="146" text-anchor="middle">Optimizer</text>
+  <rect class="box" x="694" y="40" width="110" height="220" rx="12"/>
+  <text class="t" x="749" y="146" text-anchor="middle">Controller</text>
+  <path class="ln-accent" d="M580 150 H690" marker-end="url(#ah-accent)"/>
+  <path class="ln-accent" d="M690 166 H584" marker-end="url(#ah-accent)"/>
+  <text class="xs lbl-accent mono" x="637" y="134" text-anchor="middle">Data Elements</text>
+  <text class="xs" x="637" y="190" text-anchor="middle">read · ask · be told</text>
+</svg>
+</div>
+<figcaption><b>Four doors, or one.</b> One interface means one adapter, the same on every stack,
+and an optimizer that needs nothing a router does not already publish.</figcaption>
+</figure>
+<p>prplMesh is already there: its northbound API <em>is</em> Data Elements, and the optimizer's
+prplMesh adapter uses nothing else. The RDK controller publishes Data Elements too, 517 entries of
+it, and a read of a whole six-device mesh takes about a third of a second. What the optimizer needs
+maps onto it like this (as found on 2 October 2026):</p>
+<div class="table-wrap"><table>
+<thead><tr><th>The optimizer needs</th><th>Data Elements</th><th>RDK</th><th>prplMesh</th></tr></thead>
+<tbody>
+<tr><td>devices, radios, BSSs, band and channel</td><td><code>Device</code>, <code>Radio</code>, <code>BSS</code></td><td>there</td><td>there</td></tr>
+<tr><td>which client is on which access point</td><td><code>BSS.STA</code></td><td>there</td><td>there</td></tr>
+<tr><td>the client's signal, rates and counters</td><td><code>STA.SignalStrength</code>, rates, counters</td><td>there</td><td>there</td></tr>
+<tr><td>how old that measurement is</td><td><code>STA.TimeStamp</code></td><td>there when asked by name, missing from bulk reads</td><td>there</td></tr>
+<tr><td>how busy a channel is</td><td><code>Radio.Utilization</code></td><td>there</td><td>there</td></tr>
+<tr><td>how well another access point hears the client</td><td><code>Radio.UnassociatedSTA</code> and a query</td><td>registered, not filled</td><td>there, with a vendor command</td></tr>
+<tr><td>to move a client</td><td>a command on the station</td><td>registered, not yet tried</td><td>there</td></tr>
+<tr><td>to be told when something changes</td><td>events</td><td>one event only: poll</td><td>there</td></tr>
+</tbody></table></div>
+<p>So the single interface is real, and incomplete on one stack. What is missing is a short list of
+one-time fixes in the controller, not in the optimizer. What stays different between the stacks
+shrinks to one small table of names: what the steering command is called, what the query is
+called, where a timestamp is.</p>
+<aside class="note"><span class="t">Why insist on it</span>
+<p>An optimizer that reads through a lab's side doors proves a policy in that lab. One that reads
+only what every EasyMesh controller is meant to publish proves it for a router.</p></aside>
+</section>
+
+<section id="app">
+<h2>On the router, as an application</h2>
+<p>A router's firmware is released a few times a year. A steering policy improves in the labs
+every week. The way to let the second reach homes without waiting for the first is to make the
+optimizer's core a <strong>downloadable application</strong>: installed, started, stopped and
+replaced through the router's apps framework, while EasyMesh itself (the controller, the agents,
+the Wi-Fi) stays in the firmware as fixed plumbing. The
+<a href="https://apps.vcpe.dev/">apps lab</a> runs that framework; this is how the optimizer
+would live in it.</p>
+<figure class="wide" id="fig-app">
+<div class="fig">
+<svg viewBox="0 0 820 340" role="img" aria-label="The optimizer core and a Data Elements client run in a container with one socket to the router's API gateway, which reaches the EasyMesh controller in the firmware; the apps framework installs and starts the container and its output goes to the router's journal.">
+  <rect class="box dash" x="16" y="24" width="300" height="252" rx="14"/>
+  <text class="xs" x="32" y="46">a container, from a bundle the router downloads</text>
+  <rect class="box-accent" x="36" y="60" width="260" height="84" rx="12"/>
+  <text class="t" x="52" y="90">Optimizer core</text>
+  <text class="s" x="52" y="112">policy, state, verifier, record</text>
+  <text class="xs lbl-accent" x="52" y="132">what an update replaces</text>
+  <rect class="box-accent" x="36" y="168" width="260" height="62" rx="12"/>
+  <text class="t" x="52" y="196">Data Elements client</text>
+  <text class="xs" x="52" y="216">read · ask · be told</text>
+  <path class="ln-accent" d="M166 144 V164" marker-end="url(#ah-accent)"/>
+  <text class="xs" x="32" y="262">no network · no privileges · read-only</text>
+
+  <rect class="box" x="384" y="56" width="176" height="60" rx="10"/>
+  <text class="t" x="472" y="82" text-anchor="middle">Router's journal</text>
+  <text class="xs" x="472" y="102" text-anchor="middle">every decision, one line</text>
+  <path class="ln" d="M296 96 H380" marker-end="url(#ah)"/>
+
+  <rect class="box" x="384" y="164" width="176" height="76" rx="10"/>
+  <text class="t" x="472" y="192" text-anchor="middle">API gateway</text>
+  <text class="s" x="472" y="212" text-anchor="middle">the framework's USP agent</text>
+  <text class="xs" x="472" y="230" text-anchor="middle">a role: Data Elements only</text>
+  <path class="ln-accent" d="M296 200 H380" marker-end="url(#ah-accent)"/>
+  <text class="xs lbl-accent" x="338" y="192" text-anchor="middle">one socket</text>
+
+  <rect class="box-soft" x="610" y="24" width="194" height="252" rx="14"/>
+  <text class="xs" x="626" y="46">firmware: fixed plumbing</text>
+  <rect class="box" x="626" y="60" width="162" height="84" rx="10"/>
+  <text class="t" x="707" y="90" text-anchor="middle">EasyMesh controller</text>
+  <text class="xs mono" x="707" y="112" text-anchor="middle">Data Elements</text>
+  <rect class="box" x="626" y="176" width="162" height="64" rx="10"/>
+  <text class="t" x="707" y="204" text-anchor="middle">Agents, Wi-Fi</text>
+  <text class="xs" x="707" y="224" text-anchor="middle">IEEE 1905, 802.11</text>
+  <path class="ln" d="M707 144 V172" marker-end="url(#ah)"/>
+  <path class="ln" d="M560 196 C590 196 590 104 622 104" marker-end="url(#ah)"/>
+  <text class="xs" x="574" y="150">the bus</text>
+
+  <rect class="box" x="16" y="296" width="300" height="34" rx="8"/>
+  <text class="s" x="166" y="318" text-anchor="middle">apps framework: install from a URL, start, stop</text>
+  <path class="ln dash" d="M166 296 V280" marker-end="url(#ah)"/>
+</svg>
+</div>
+<figcaption><b>What is in the box.</b> The algorithm and one client for Data Elements. Its only way
+out is one socket to the gateway; its only output is its record of decisions. Everything it steers
+with is already in the firmware.</figcaption>
+</figure>
+<p>A container takes away most of what the optimizer leans on in the lab. That is the point of
+the exercise, and it lines up with the rule above:</p>
+<div class="table-wrap"><table>
+<thead><tr><th>In the lab today</th><th>In an application</th></tr></thead>
+<tbody>
+<tr><td>reads a lab web API and enters the controller's container</td><td>one socket, to the gateway, and Data Elements through it</td></tr>
+<tr><td>steers by running a script on the host</td><td>the steering command of the data model</td></tr>
+<tr><td>listens on the IEEE 1905 traffic for load reports</td><td>no raw sockets: utilization and counters from the data model</td></tr>
+<tr><td>checks a move on the client itself and with traffic</td><td>the controller's model is the only witness; the lab keeps checking it against the others</td></tr>
+<tr><td>keeps its state and journal in files</td><td>a small temporary space: it starts cautious after every update, and writes its record to the router's journal</td></tr>
+<tr><td>expects the lab's five devices and twenty clients</td><td>safety gates from the data itself</td></tr>
+</tbody></table></div>
+<aside class="note limit"><span class="t">What is in the way</span>
+<p>The framework is taken as it is, and as it is, its gateway does not carry Data Elements yet, and
+carries parameters but no commands: the optimizer could watch through it and not steer. Bundles
+arrive over plain HTTP, unsigned. An update is an uninstall and an install. None of this stops the
+work; each has a fix or a named alternative, and an experiment that decides between them.</p></aside>
+<p>The order of work is deliberately dull. First the single interface, proven from the lab with
+no application at all: the Data Elements observer runs in shadow beside today's and the two
+records are compared. Then the same core in a bundle, observing, then recommending, then acting,
+in the same rooms as before. The full assessment, with every problem, its fix and its alternatives,
+is in the repository:
+<a href="https://github.com/boardfarmdevs/easymesh-optimizer/blob/main/docs/proposals/optimizer-as-an-app.md">The
+optimizer as an application, on Data Elements</a>. It is a proposal: nothing on this page before
+these two sections has changed.</p>
+</section>
+
 <section id="repository">
 <h2>The repository</h2>
 <div class="table-wrap"><table>
@@ -528,10 +674,11 @@ one explicit action with its verification and backoff, and only then let it run 
 <tr><td><code>scenarios/</code></td><td>the case matrix over the medium's golden worlds</td></tr>
 <tr><td><code>acceptance/</code></td><td>the live acceptance and measurement tools both labs run</td></tr>
 <tr><td><code>tests/</code></td><td>units, adapters, replay, the closed-loop golden-world tests, the room service</td></tr>
-<tr><td><code>docs/</code></td><td>the architecture, operation and extension, the scenarios, band steering</td></tr>
+<tr><td><code>docs/</code></td><td>the architecture, operation and extension, the scenarios, band steering, the proposal for the application</td></tr>
 </tbody></table></div>
-<p>The CI tests it with the medium checked out beside it, as the labs lay them out. It runs in a
-lab VM next to the controller, never in a device image.</p>
+<p>The CI tests it with the medium checked out beside it, as the labs lay them out. Today it runs
+in a lab VM next to the controller, never in a device image; the <a href="#app">application</a> is
+how that is proposed to change.</p>
 </section>
 
 <footer class="end">
