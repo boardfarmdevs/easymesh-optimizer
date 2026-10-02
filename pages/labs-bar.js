@@ -3,7 +3,8 @@
  * sites, linking every project's site. The projects serve three goals, EasyMesh
  * optimizer development, the OpenSync adapter and EasyMesh on physical hardware, on
  * the way to one EasyMesh system on wmediumd with native agents and OpenSync pods
- * together; the RF medium, the clients and the resources are shared by the labs.
+ * together; the RF medium, the clients, remote access and the resources are shared by
+ * the labs.
  *
  * Shared: the same file (pages/labs-bar.js) in every repository with a site, the
  * umbrella easymesh-labs (whose site the home link opens) and each project listed
@@ -85,6 +86,11 @@
           about: "The labs' Wi-Fi clients: how they are built, configured and managed, and how they can do more",
         },
         {
+          repo: 'easymesh-remote',
+          name: 'Remote',
+          about: 'Reaching a lab from anywhere: the gateway with its login and reservation, and how a host is set up',
+        },
+        {
           repo: 'easymesh-resources',
           name: 'Resources',
           about: "Shared material for the labs: the MV3 EasyMesh footprint and the production plan",
@@ -151,19 +157,22 @@ html[data-theme="dark"] #labs-bar, #labs-bar.lb-dark {
 #labs-bar .lb-source { margin-left: auto; color: var(--lb-muted); }
 #labs-bar .lb-short { display: none; }
 #labs-bar .lb-full { display: inline; }
-@media (max-width: 1760px) {
+@media (max-width: 1800px) {
   #labs-bar .lb-full { display: none; }
   #labs-bar .lb-short { display: inline; }
 }
-@media (max-width: 1366px) {
+@media (max-width: 1500px) {
   #labs-bar a { padding-left: 5px; padding-right: 5px; }
   #labs-bar .lb-group { margin-left: 7px; padding-left: 7px; }
 }
-@media (max-width: 1340px) {
+@media (max-width: 1460px) {
   #labs-bar .lb-row, #labs-bar .lb-group { gap: 1px; }
   #labs-bar a { padding-left: 4px; padding-right: 4px; }
   #labs-bar .lb-group { margin-left: 5px; padding-left: 5px; }
   #labs-bar .lb-label { margin-right: 2px; }
+}
+@media (max-width: 1340px) {
+  #labs-bar { font-size: 12px; }
 }
 @media (max-width: 640px) {
   #labs-bar .lb-row { padding: 0 12px; }
