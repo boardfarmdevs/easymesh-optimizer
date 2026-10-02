@@ -3,7 +3,7 @@
  * sites, linking every project's site. The projects serve three goals, EasyMesh
  * optimizer development, the OpenSync adapter and EasyMesh on physical hardware, on
  * the way to one EasyMesh system on wmediumd with native agents and OpenSync pods
- * together; the RF medium and the resources are shared by the labs.
+ * together; the RF medium, the clients and the resources are shared by the labs.
  *
  * Shared: the same file (pages/labs-bar.js) in every repository with a site, the
  * umbrella easymesh-labs (whose site the home link opens) and each project listed
@@ -80,6 +80,11 @@
           about: 'Virtual radios, wmediumd and the rooms: the radio medium both optimizer labs run on',
         },
         {
+          repo: 'easymesh-clients',
+          name: 'Clients',
+          about: "The labs' Wi-Fi clients: how they are built, configured and managed, and how they can do more",
+        },
+        {
           repo: 'easymesh-resources',
           name: 'Resources',
           about: "Shared material for the labs: the MV3 EasyMesh footprint and the production plan",
@@ -153,6 +158,12 @@ html[data-theme="dark"] #labs-bar, #labs-bar.lb-dark {
 @media (max-width: 1366px) {
   #labs-bar a { padding-left: 5px; padding-right: 5px; }
   #labs-bar .lb-group { margin-left: 7px; padding-left: 7px; }
+}
+@media (max-width: 1340px) {
+  #labs-bar .lb-row, #labs-bar .lb-group { gap: 1px; }
+  #labs-bar a { padding-left: 4px; padding-right: 4px; }
+  #labs-bar .lb-group { margin-left: 5px; padding-left: 5px; }
+  #labs-bar .lb-label { margin-right: 2px; }
 }
 @media (max-width: 640px) {
   #labs-bar .lb-row { padding: 0 12px; }
