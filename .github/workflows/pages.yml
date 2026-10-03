@@ -1,8 +1,6 @@
-# The Pages workflow of the EasyMesh labs' sites: the same file in every repository with a
-# site. The repository's own step is pages/build (into dist/site); pages/finish-site.py adds
-# the labs bar and build.json; pages/check-docs.py checks the labs block and the
-# documentation's links first.
-# Pages source: GitHub Actions. Deploys from main only.
+# Pages: the EasyMesh labs' shared workflow (easymesh-labs .github/workflows/labs-pages.yml)
+# checks this repository's documentation, runs its pages/build, adds the labs bar and
+# deploys from main. Pages source: GitHub Actions.
 name: pages
 on:
   push:
@@ -18,36 +16,9 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  build:
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v5
-        with:
-          fetch-depth: 0
-          submodules: recursive
-      - name: Check the documentation
-        run: python3 pages/check-docs.py
-      - uses: actions/setup-node@v5
-        with:
-          node-version: '24'
-      - name: Build the site
-        run: pages/build
-      - name: Finish the site (labs bar, build.json)
-        run: python3 pages/finish-site.py dist/site
-      - uses: actions/upload-pages-artifact@v4
-        with:
-          path: dist/site
-  deploy:
-    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
-    needs: build
-    runs-on: ubuntu-24.04
+  pages:
+    uses: boardfarmdevs/easymesh-labs/.github/workflows/labs-pages.yml@main
     permissions:
+      contents: read
       pages: write
       id-token: write
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    steps:
-      - uses: actions/configure-pages@v5
-      - id: deployment
-        uses: actions/deploy-pages@v4

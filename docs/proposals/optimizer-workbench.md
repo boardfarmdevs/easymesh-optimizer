@@ -21,7 +21,8 @@ policy interface in-process and need none of the machinery below.
 the room service in this repository, pinned by both labs) and the gateway extended to the
 prplMesh lab with one published lab per host (easymesh-remote's steps 2 and 3). Its phases 6
 to 8 continued the RDK lab's rooms plan, whose earlier phases the splits of 30 September
-completed.
+completed; that plan was retired on 2 October 2026, and what remained of it is in the
+umbrella's proposals register ([easymesh-labs](https://mesh.vcpe.dev/)).
 
 An optimizer developer writes one Python class that turns each telemetry
 snapshot into decisions. They develop it offline against replayed lab journals,

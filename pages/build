@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
-# Build this repository's Pages site into dist/site. This is the only per-repository
-# step: pages/finish-site.py, pages/labs-bar.js and .github/workflows/pages.yml are
-# the same in every repository with a site.
+# Build this repository's Pages site into dist/site: the only per-repository step. The rest
+# is the labs' shared Pages workflow (easymesh-labs .github/workflows/labs-pages.yml).
 #
 # easymesh-optimizer: the explainer (site/), static files; every local link and anchor checked.
 set -euo pipefail
