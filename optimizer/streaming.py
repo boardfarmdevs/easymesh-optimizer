@@ -175,8 +175,15 @@ class StreamingCandidateProvider:
                 if rejected is not None and rejected[0] == self._versions.get(key[0]):
                     ages.append((now - parse_time(rejected[1])).total_seconds())
                 return min(ages) if ages else None
+            # Only the pairs the provider can measure. A pair it never asks for (a candidate
+            # on another band than the station's) never has evidence and so was always
+            # missing: every round was due at once and asked for nothing, five empty rounds
+            # a second in an idle room, each waking the optimizer for another evaluation.
+            measurable = getattr(self.provider, "measurable", None)
+            stations = {client.sta_mac: client for client in clients}
             ages = {(item.sta_mac, item.bssid): age((item.sta_mac, item.bssid))
-                    for item in inventory if item.eligible}
+                    for item in inventory if item.eligible
+                    and (measurable is None or measurable(stations.get(item.sta_mac), item))}
             # Missing evidence (a new or moved station) and evidence about to expire
             # go first, in a round of their own: behind a refresh wave a steered
             # station would wait a whole round of radios it does not need. At most

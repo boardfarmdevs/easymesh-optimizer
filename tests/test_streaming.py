@@ -362,6 +362,31 @@ def test_incremental_round_refreshes_aging_pairs():
         provider.close()
 
 
+def test_a_pair_the_provider_cannot_measure_starts_no_rounds():
+    class SameBand(RecordingDelegate):
+        @staticmethod
+        def measurable(client, candidate):
+            return client is not None and candidate.band == client.band
+
+        def __call__(self, clients, inventory, bsses, observed_at):
+            inventory = tuple(item for item in inventory if item.band == clients[0].band)
+            return super().__call__(clients, inventory, bsses, observed_at)
+    delegate = SameBand()
+    provider = StreamingCandidateProvider(delegate, maximum_age_seconds=30, refresh_after_seconds=15)
+    try:
+        sample = snapshot(0)
+        other_band = replace(sample.candidates[0], bssid="02:00:00:aa:aa:24", band="2.4")
+        sample = replace(sample, candidates=(*sample.candidates, other_band))
+        collect(provider, sample)
+        provider._future.result(timeout=1)
+        assert len(collect(provider, sample)) == 1
+        # the 2.4 GHz pair is never measured; with the 5 GHz pair fresh, no round starts
+        assert provider._future is None and len(delegate.calls) == 1
+        assert provider.last_selection["eligible_clients"] == 0
+    finally:
+        provider.close()
+
+
 def test_refresh_age_must_lie_within_the_maximum_age():
     with pytest.raises(ValueError):
         StreamingCandidateProvider(Delegate(), maximum_age_seconds=30, refresh_after_seconds=31)
