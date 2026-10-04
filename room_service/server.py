@@ -291,11 +291,10 @@ class RoomDemoServer:
                     location = "/viewer/" + (f"?{parsed.query}" if parsed.query else "")
                     self._headers(HTTPStatus.FOUND, "text/plain; charset=utf-8", 0, {"Location": location})
                 elif parsed.path == "/healthz":
-                    current = store.current()
                     complete = store.storage_status()["journal"].get("complete", True)
                     self._json({"status": "ok" if complete else "degraded", "run_id": store.run_id,
                                 "evidence_complete": complete,
-                                "state": current["state"]})
+                                "state": store.clock_state()[1]})
                 elif parsed.path == "/api/demo/current":
                     current = store.current()
                     self._json(current, revision=current["world_revision"])

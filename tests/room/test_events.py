@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -147,6 +149,16 @@ class EventStoreTests(unittest.TestCase):
         self.assertEqual(second["previous_event_hash"], first["event_hash"])
         self.assertEqual(self.store.current()["evidence_digest"], second["event_hash"])
         self.assertIsNotNone(self.store.current()["state_digest"])
+
+    def test_state_digest_is_the_state_after_the_latest_event(self):
+        self.store.emit("runner.preflight", 100, {})
+        first = self.store.current()
+        self.assertEqual(self.store.current()["state_digest"], first["state_digest"])
+        unsigned = {key: value for key, value in first.items() if key != "state_digest"}
+        material = json.dumps(unsigned, sort_keys=True, separators=(",", ":"), allow_nan=False)
+        self.assertEqual(first["state_digest"], hashlib.sha256(material.encode()).hexdigest())
+        self.store.emit("scenario.clock", 200, {})
+        self.assertNotEqual(self.store.current()["state_digest"], first["state_digest"])
 
     def test_reducer_reconstructs_role_medium_and_environment_state(self):
         world = {

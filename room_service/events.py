@@ -115,8 +115,9 @@ class EventStore:
         self._state["state"] = value
         self._state["run_state"] = value
 
-    def _state_hash(self) -> str:
-        unsigned = copy.deepcopy(self._state)
+    @staticmethod
+    def _state_hash(state: dict[str, Any]) -> str:
+        unsigned = dict(state)
         unsigned.pop("state_digest", None)
         material = json.dumps(
             unsigned, sort_keys=True, separators=(",", ":"), allow_nan=False
@@ -365,7 +366,6 @@ class EventStore:
                 self._state["error"] = payload.get("error")
                 self._state["scenario_clock_state"] = "stopped"
             self._state["evidence_digest"] = event.get("event_hash")
-            self._state["state_digest"] = self._state_hash()
             if self._journal is not None:
                 self._journal.append(event, encoded)
             elif self.persist:
@@ -429,7 +429,12 @@ class EventStore:
 
     def current(self) -> dict[str, Any]:
         with self._condition:
-            return copy.deepcopy(self._state)
+            state = copy.deepcopy(self._state)
+        # the digest of the state after its latest event, made when the state is asked for:
+        # made with every event it was a deep copy of the whole state each time, 0.4 cores
+        # in an idle room
+        state["state_digest"] = self._state_hash(state)
+        return state
 
     def publish_rf_observations(self, payload, world_time_ms, environment_epoch):
         with self._condition:
