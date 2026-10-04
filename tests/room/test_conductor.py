@@ -275,6 +275,15 @@ class ConductorProjectionTests(unittest.TestCase):
         self.assertFalse(conductor._optimizer_wait(5, 1))
         self.assertLess(time.monotonic() - started, 0.1)
 
+    def test_network_workers_rest_with_the_optimizer_until_the_room_changes(self):
+        conductor, store = self._conductor()
+        conductor.profiling = True
+        self.assertEqual(conductor._profile_cadence(), 0.25)
+        conductor._optimizer_quiet = 0
+        self.assertEqual(conductor._profile_cadence(), 1.0)
+        store.emit("optimizer.environment.changed", 0, {"environment_epoch": 1})
+        self.assertEqual(conductor._profile_cadence(), 0.25)
+
     def test_profiling_rests_only_converged_with_nothing_in_flight_in_a_still_room(self):
         still = {"movement_active": False, "stable_for_seconds": 30}
         converged = {"converged": True}

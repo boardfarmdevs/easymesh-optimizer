@@ -102,7 +102,8 @@ PROFILE_IN_FLIGHT_SECONDS = 8
 # PROFILE_QUIET_AFTER_SECONDS, it rests PROFILE_QUIET_SECONDS between evaluations (the
 # controller inventory it reads is a second old anyway); an idle room was evaluated
 # seven times a second (4 October 2026). A candidate result still wakes it at once and
-# a room change within PROFILE_ROOM_POLL_SECONDS.
+# a room change within PROFILE_ROOM_POLL_SECONDS. The network workers, which read the
+# controller's topology and link metrics four times a second, rest with it.
 PROFILE_QUIET_SECONDS = 1.0
 PROFILE_QUIET_AFTER_SECONDS = 10
 PROFILE_ROOM_POLL_SECONDS = 0.25
@@ -416,6 +417,7 @@ class LiveConductor:
         self._candidate_active = threading.Event()
         self._candidate_updated = threading.Event()
         self._streaming_provider = None
+        self._optimizer_quiet = False
         self._band_measurements = BandSteeringMeasurements(
             updated=self._candidate_updated.set,
             telemetry=lambda value: self.store.emit("optimizer.band_scan", self._time(), value, producer="optimizer"))
@@ -584,6 +586,12 @@ class LiveConductor:
 
     def _sleep(self, seconds: float) -> bool:
         return self.stop_event.wait(seconds)
+
+    def _profile_cadence(self) -> float:
+        """The profiling network workers' period: they rest with the optimizer, until the room changes."""
+        quiet_epoch = self._optimizer_quiet
+        return (PROFILE_QUIET_SECONDS if quiet_epoch is not False
+                and quiet_epoch == self.store.environment_epoch() else 0.25)
 
     def _optimizer_wait(self, seconds: float, epoch: int | None) -> bool:
         if self.profiling:
@@ -1005,7 +1013,7 @@ class LiveConductor:
                     observer.metrics_for(clients)
             except (CandidateMetricsUnavailable, OSError, ValueError, KeyError) as error:
                 self._record_error("network-metrics", error, fatal=False)
-            cadence = 0.25 if self.profiling else 3
+            cadence = self._profile_cadence() if self.profiling else 3
             if self._sleep(max(0.05, cadence - (time.monotonic() - started))):
                 break
 
@@ -1060,7 +1068,7 @@ class LiveConductor:
                 # transaction owns that path; the next sample and the final
                 # authoritative health gate decide whether this was transient.
                 self._record_error("network", error, fatal=False)
-            cadence = 0.25 if self.profiling else 1
+            cadence = self._profile_cadence() if self.profiling else 1
             if self._sleep(max(0.05, cadence - (time.monotonic() - started)) if self.interactive else 2):
                 break
 
@@ -1960,6 +1968,8 @@ class LiveConductor:
             finally:
                 self._candidate_active.clear()
             elapsed = time.monotonic() - cycle_started
+            # the environment epoch the optimizer rests in, or False
+            self._optimizer_quiet = observed_epoch if quiet and observed_epoch is not None else False
             rest = PROFILE_QUIET_SECONDS if quiet else interval
             if self._optimizer_wait(retry_delay or max(0.1, rest - elapsed), observed_epoch):
                 break
