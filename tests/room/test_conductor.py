@@ -32,6 +32,7 @@ from room_service.conductor import (
     _interrupted_measurement_state,
     _interactive_policy,
     _completed_action_state,
+    _profile_quiet,
     _ranked_action_batch,
     _simulated_bss_channels,
 )
@@ -256,6 +257,35 @@ class ConductorProjectionTests(unittest.TestCase):
         self.assertFalse(conductor._optimizer_wait(1, 0))
         timer.join()
         self.assertLess(time.monotonic() - started, 0.5)
+
+    def test_rf_change_interrupts_a_profiling_rest(self):
+        conductor, store = self._conductor()
+        conductor.profiling = True
+        import threading
+        import time
+        timer = threading.Timer(0.02, lambda: store.emit(
+            "optimizer.environment.changed", 0, {"environment_epoch": 1}))
+        timer.start()
+        started = time.monotonic()
+        self.assertFalse(conductor._optimizer_wait(5, 0))
+        timer.join()
+        self.assertLess(time.monotonic() - started, 1)
+        conductor._candidate_updated.set()
+        started = time.monotonic()
+        self.assertFalse(conductor._optimizer_wait(5, 1))
+        self.assertLess(time.monotonic() - started, 0.1)
+
+    def test_profiling_rests_only_converged_with_nothing_in_flight_in_a_still_room(self):
+        still = {"movement_active": False, "stable_for_seconds": 30}
+        converged = {"converged": True}
+        self.assertTrue(_profile_quiet(converged, [], {}, still))
+        self.assertFalse(_profile_quiet({"converged": False}, [], {}, still))
+        self.assertFalse(_profile_quiet(converged, [Mock()], {}, still))
+        self.assertFalse(_profile_quiet(converged, [], {"02:00:00:00:0c:00": Mock()}, still))
+        self.assertFalse(_profile_quiet(converged, [], {}, {**still, "movement_active": True}))
+        self.assertFalse(_profile_quiet(converged, [], {}, {**still, "stable_for_seconds": 2}))
+        self.assertFalse(_profile_quiet(converged, [], {}, {**still, "stable_for_seconds": None}))
+        self.assertFalse(_profile_quiet(converged, [], {}, None))
 
     def test_superseded_collection_is_not_a_native_outage_or_fatal_error(self):
         conductor, store, policy, actuator, sleeper = self._run_optimizer([CandidateSnapshotSuperseded("RF changed"), None])

@@ -97,6 +97,15 @@ def _priority_client(client, role, mac_by_role, ap_role_by_bssid, deadline, now)
 # watched at once (lab.RoomStack.verifications).
 PROFILE_ACTIONS_IN_FLIGHT = 5
 PROFILE_IN_FLIGHT_SECONDS = 8
+# Profiling evaluates every 0.25 s, and at once on a candidate result. Once the fleet
+# has converged, nothing is steered or verified and the room has been still for
+# PROFILE_QUIET_AFTER_SECONDS, it rests PROFILE_QUIET_SECONDS between evaluations (the
+# controller inventory it reads is a second old anyway); an idle room was evaluated
+# seven times a second (4 October 2026). A candidate result still wakes it at once and
+# a room change within PROFILE_ROOM_POLL_SECONDS.
+PROFILE_QUIET_SECONDS = 1.0
+PROFILE_QUIET_AFTER_SECONDS = 10
+PROFILE_ROOM_POLL_SECONDS = 0.25
 
 
 def _interactive_policy(config):
@@ -270,6 +279,13 @@ def _fleet_status(snapshot, selected_sta_macs: set[str], max_age_seconds=60, min
         "measurement_complete": roster_complete and checked == total,
         "converged": roster_complete and checked == total and total > 0 and not actionable,
     }
+
+
+def _profile_quiet(fleet, steer_decisions, pending_verifications, room) -> bool:
+    """Whether profiling may rest PROFILE_QUIET_SECONDS before its next evaluation."""
+    return bool(fleet.get("converged") and not steer_decisions and not pending_verifications
+                and room is not None and not room.get("movement_active")
+                and (room.get("stable_for_seconds") or 0) >= PROFILE_QUIET_AFTER_SECONDS)
 
 
 def _client_optimizer_status(snapshot, evaluation, config, selected_sta_macs):
@@ -571,7 +587,12 @@ class LiveConductor:
 
     def _optimizer_wait(self, seconds: float, epoch: int | None) -> bool:
         if self.profiling:
-            self._candidate_updated.wait(seconds)
+            deadline = time.monotonic() + seconds
+            while not self._candidate_updated.wait(
+                    max(0.0, min(PROFILE_ROOM_POLL_SECONDS, deadline - time.monotonic()))):
+                if (time.monotonic() >= deadline or self.stop_event.is_set()
+                        or (epoch is not None and self.store.environment_epoch() != epoch)):
+                    break
             return self.stop_event.is_set()
         if not self.interactive or epoch is None:
             return self._sleep(seconds)
@@ -1323,6 +1344,7 @@ class LiveConductor:
             cycle_started = time.monotonic()
             self._candidate_updated.clear()
             retry_delay = 0.0
+            quiet = False
             try:
                 room_before = self.room_state() if self.room_state else None
                 cycle_world_epoch = self.store.world_epoch()
@@ -1581,6 +1603,8 @@ class LiveConductor:
                 action_batch = [item for item in action_batch if not self._band_measurements.in_flight(item.sta_mac)]
                 if action_batch:
                     selected_action = action_batch[0]
+                quiet = self.profiling and _profile_quiet(fleet, steer_decisions, pending_verifications,
+                                                          room_after)
                 if steer_decisions and self.mode == "recommend":
                     state = _recommendation_state(prior, evaluation)
                 elif steer_decisions and self.mode == "act" and not can_act:
@@ -1936,7 +1960,8 @@ class LiveConductor:
             finally:
                 self._candidate_active.clear()
             elapsed = time.monotonic() - cycle_started
-            if self._optimizer_wait(retry_delay or max(0.1, interval - elapsed), observed_epoch):
+            rest = PROFILE_QUIET_SECONDS if quiet else interval
+            if self._optimizer_wait(retry_delay or max(0.1, rest - elapsed), observed_epoch):
                 break
 
     def summary(self) -> dict[str, Any]:
