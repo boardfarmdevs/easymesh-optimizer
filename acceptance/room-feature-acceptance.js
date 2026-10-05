@@ -7,6 +7,7 @@ const {execFile} = require('node:child_process');
 const {promisify} = require('node:util');
 const execFileAsync = promisify(execFile);
 const {startHostMonitor, hostCommand, guestAuditInstallCommand} = require('./room-host-monitor.js');
+const {launchBrowser, rendererUsable} = require('./browser-renderer.js');
 const pause = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds));
 const lower = value => String(value || '').toLowerCase();
 const same = (left, right) => JSON.stringify(left) === JSON.stringify(right);
@@ -398,14 +399,10 @@ async function run(args) {
     convergenceCriterion: 'configured-steering-policy', strongestApReportedSeparately: true, temporaryActionLimit: 2000};
   const browserEnvironment = {...process.env};
   delete browserEnvironment.DISPLAY;
-  const renderer = args.renderer || 'swiftshader';
-  if (!['swiftshader', 'vulkan'].includes(renderer)) throw new Error('Unsupported --renderer');
-  const rendererArguments = renderer === 'vulkan' ?
-    ['--use-angle=vulkan', '--disable-software-rasterizer'] :
-    ['--use-angle=swiftshader', '--enable-unsafe-swiftshader'];
-  const browser = await chromium.launch({headless: true, env: browserEnvironment, executablePath: process.env.CHROMIUM_PATH,
-    args: ['--no-sandbox', '--ozone-platform=headless', '--use-gl=angle', ...rendererArguments,
-      '--disable-background-timer-throttling', '--disable-renderer-backgrounding', '--disable-backgrounding-occluded-windows']});
+  // auto (the default): the host's GPU when it has a usable one, else software (browser-renderer.js)
+  const {browser, renderer: rendering} = await launchBrowser(chromium, {renderer: args.renderer || 'auto',
+    env: browserEnvironment, executablePath: process.env.CHROMIUM_PATH,
+    args: ['--disable-background-timer-throttling', '--disable-renderer-backgrounding', '--disable-backgrounding-occluded-windows']});
   const context = await browser.newContext({viewport: {width: 1280, height: 900}});
   context.setDefaultTimeout(45000);
   const labOrigins = new Set([args['room-url'], args['topology-url']].map(value => new URL(value).origin));
@@ -417,14 +414,9 @@ async function run(args) {
   });
   const room = await context.newPage();
   const topology = await context.newPage();
-  report.renderer = {requested: renderer, actual: await room.evaluate(() => {
-    const context = document.createElement('canvas').getContext('webgl');
-    const extension = context?.getExtension('WEBGL_debug_renderer_info');
-    return extension ? context.getParameter(extension.UNMASKED_RENDERER_WEBGL) : null;
-  })};
+  report.renderer = rendering;
   save('renderer.json', report.renderer);
-  if (!report.renderer.actual || (renderer === 'vulkan' &&
-      /swiftshader|llvmpipe|software/i.test(report.renderer.actual))) {
+  if (!rendererUsable(report.renderer)) {
     await browser.close();
     throw new Error('Requested renderer unavailable: ' + JSON.stringify(report.renderer));
   }

@@ -10,6 +10,7 @@ const {promisify} = util;
 const {kernelClientAudit, reauditOwners} = require('./room-feature-acceptance.js');
 const execute = promisify(execFile);
 const {hostCommand, guestAuditInstallCommand, startHostMonitor} = require('./room-host-monitor.js');
+const {launchBrowser, rendererUsable} = require('./browser-renderer.js');
 const rooms = ['backhaul-branch-formation', 'backhaul-parent-handover', 'backhaul-isolation-recovery'];
 // Only in the room sets with the wired extender (worlds-wired): run when the catalog has it.
 const wiredRooms = ['backhaul-wired-parent'];
@@ -196,13 +197,10 @@ async function run(options) {
   const {chromium} = require(process.env.PLAYWRIGHT_MODULE || 'playwright-core');
   const environment = {...process.env};
   delete environment.DISPLAY;
-  const renderer = options.renderer || 'swiftshader';
-  assert.ok(['swiftshader', 'vulkan'].includes(renderer));
-  const browser = await chromium.launch({headless: true, env: environment, executablePath: process.env.CHROMIUM_PATH,
-    args: ['--no-sandbox', '--ozone-platform=headless', '--use-gl=angle',
-      ...(renderer === 'vulkan' ? ['--use-angle=vulkan', '--disable-software-rasterizer'] :
-        ['--enable-unsafe-swiftshader', '--use-angle=swiftshader']),
-      '--disable-background-timer-throttling', '--disable-renderer-backgrounding']});
+  // auto (the default): the host's GPU when it has a usable one, else software (browser-renderer.js)
+  const {browser, renderer: rendering} = await launchBrowser(chromium, {renderer: options.renderer || 'auto',
+    env: environment, executablePath: process.env.CHROMIUM_PATH,
+    args: ['--disable-background-timer-throttling', '--disable-renderer-backgrounding']});
   const context = await browser.newContext({viewport: {width: 1280, height: 900}});
   context.setDefaultTimeout(45000);
   const roomPage = await context.newPage();
@@ -351,12 +349,8 @@ async function run(options) {
   try {
     hostMonitor = await startHostMonitor(options.host, directory, {processes: true});
     report.before = await identity();
-    report.renderer = {requested: renderer, actual: await roomPage.evaluate(() => {
-      const context = document.createElement('canvas').getContext('webgl');
-      const extension = context?.getExtension('WEBGL_debug_renderer_info');
-      return extension ? context.getParameter(extension.UNMASKED_RENDERER_WEBGL) : null;
-    })};
-    assert.ok(report.renderer.actual && (renderer !== 'vulkan' || !/swiftshader|llvmpipe|software/i.test(report.renderer.actual)));
+    report.renderer = rendering;
+    assert.ok(rendererUsable(report.renderer), 'Requested renderer unavailable: ' + JSON.stringify(report.renderer));
     const before = await request('/api/demo/current');
     baseline = await request('/api/demo/interactions');
     assert.equal(before.health.healthy, true, 'Start with a healthy default lab');
