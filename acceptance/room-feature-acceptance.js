@@ -296,13 +296,13 @@ function evaluate(current, interactions, view, world, bindings, now = Date.now()
     mediumFault, bandErrors};
 }
 
-// A client has left an AP that is down 5 s into its outage; a 6 GHz client 8 s: it scans
-// every 6 GHz channel, and the PMF it must use answers its association with a comeback
-// while the next AP still holds its earlier one (a roam sends no deauth). Measured on the
-// RDK lab's wired extender, 6 October: 3.7 to 4.5 s, seen at the next sample.
-const OUTAGE_GRACE_MS = 5000;
-const OUTAGE_GRACE_6GHZ_MS = 8000;
-const outageGraceMs = client => client.band === '6' ? OUTAGE_GRACE_6GHZ_MS : OUTAGE_GRACE_MS;
+// A client has left an AP that is down 8 s into its outage, on every band. Measured on the
+// RDK lab's wired extender (6 and 7 October), seen at the next sample: its 2.4 and 5 GHz
+// clients associate elsewhere 1 to 6 s after the cut (a scan of their known frequencies or of
+// both bands), its 6 GHz client 3.7 to 4.5 s (every 6 GHz channel scanned, then the PMF it
+// must use answered with a comeback while the next AP still holds its earlier association,
+// as a roam sends no deauth). At 5 s one sample decided the room.
+const OUTAGE_GRACE_MS = 8000;
 
 function fronthaulOutages(world, samples) {
   return Object.entries(world.roles).filter(([, kind]) => kind === 'fronthaul_ap').flatMap(([role]) => {
@@ -311,8 +311,8 @@ function fronthaulOutages(world, samples) {
     const end = world.generations.find(frame => frame.time_ms > start && frame.present[role])?.time_ms ?? world.duration_ms + 1;
     const checked = samples.filter(sample => sample.phase === 'playing' && sample.playback.time_ms >= start + OUTAGE_GRACE_MS && sample.playback.time_ms < end);
     return [{role, startMs: start, endMs: end, samples: checked.length,
-      remainingAssociations: checked.filter(sample => (sample.roomAssociations || []).some(client =>
-        client.ap === role && sample.playback.time_ms >= start + outageGraceMs(client))).map(sample => sample.playback.time_ms),
+      remainingAssociations: checked.filter(sample => (sample.roomAssociations || []).some(client => client.ap === role))
+        .map(sample => sample.playback.time_ms),
       meshConnected: checked.every(sample => sample.meshConnected && sample.meshViewMatches)}];
   });
 }

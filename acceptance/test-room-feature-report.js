@@ -31,19 +31,19 @@ const world = {roles: {extender_4: 'fronthaul_ap'}, duration_ms: 90000, generati
 ]};
 const outageSample = (time, ap) => ({phase: 'playing', playback: {time_ms: time},
   roomAssociations: [{ap}], meshConnected: true, meshViewMatches: true});
-assert.deepEqual(fronthaulOutages(world, [outageSample(24000, 'extender_4'), outageSample(25000, 'extender_4'),
-  outageSample(26000, 'gateway'), outageSample(60000, 'extender_4')]), [{role: 'extender_4', startMs: 20000,
-    endMs: 60000, samples: 2, remainingAssociations: [25000], meshConnected: true}]);
-assert.equal(fronthaulOutages(world, [outageSample(25000, 'gateway')])[0].remainingAssociations.length, 0);
-assert.equal(fronthaulOutages(world, [outageSample(24000, 'extender_4')])[0].samples, 0);
-assert.equal(fronthaulOutages(world, [{...outageSample(25000, 'gateway'), meshViewMatches: false}])[0].meshConnected, false);
-// a 6 GHz client has 8 s: still on the AP at 25 and 27 s passes, at 28 s fails; others 5 s
+assert.deepEqual(fronthaulOutages(world, [outageSample(27000, 'extender_4'), outageSample(28000, 'extender_4'),
+  outageSample(29000, 'gateway'), outageSample(60000, 'extender_4')]), [{role: 'extender_4', startMs: 20000,
+    endMs: 60000, samples: 2, remainingAssociations: [28000], meshConnected: true}]);
+assert.equal(fronthaulOutages(world, [outageSample(28000, 'gateway')])[0].remainingAssociations.length, 0);
+assert.equal(fronthaulOutages(world, [outageSample(27000, 'extender_4')])[0].samples, 0);
+assert.equal(fronthaulOutages(world, [{...outageSample(28000, 'gateway'), meshViewMatches: false}])[0].meshConnected, false);
+// every band has 8 s: still on the AP at 27 s passes, at 28 s fails
 const onBand = (time, band) => ({...outageSample(time, 'extender_4'), roomAssociations: [{ap: 'extender_4', band}]});
-assert.deepEqual(fronthaulOutages(world, [onBand(25000, '6'), onBand(27000, '6'), outageSample(29000, 'gateway')])[0]
-  .remainingAssociations, []);
-assert.deepEqual(fronthaulOutages(world, [onBand(28000, '6')])[0].remainingAssociations, [28000]);
-assert.deepEqual(fronthaulOutages(world, [onBand(25000, '5'), onBand(25000, '2.4')])[0].remainingAssociations,
-  [25000, 25000]);
+for (const band of ['2.4', '5', '6']) {
+  assert.deepEqual(fronthaulOutages(world, [onBand(25000, band), onBand(27000, band), outageSample(29000, 'gateway')])[0]
+    .remainingAssociations, []);
+  assert.deepEqual(fronthaulOutages(world, [onBand(28000, band)])[0].remainingAssociations, [28000]);
+}
 const qualified = {tested: 14, passed: 14, errors: [], eventGaps: [], nativeIdentitiesUnchanged: true,
   restoration: {applied: true, convergence: {passed: true}}, host: {samplingComplete: true}};
 assert.equal(qualificationPassed(qualified), true);
@@ -51,7 +51,7 @@ for (const change of [{tested: 0, passed: 0}, {passed: 13}, {failure: 'failed'},
   {eventGaps: ['lost']}, {nativeIdentitiesUnchanged: false}, {restoration: {}}, {host: {samplingComplete: false}}]) {
   assert.equal(qualificationPassed({...qualified, ...change}), false);
 }
-console.log('PASS: the fronthaul outage gate (5 s, 8 s on 6 GHz) and qualification failures cannot report success');
+console.log('PASS: the fronthaul outage gate (8 s) and qualification failures cannot report success');
 
 const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'band-report-'));
 try {
