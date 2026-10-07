@@ -192,6 +192,24 @@ function bandSteeringSummary(world, events, verifications) {
     scanMeasurements: events.filter(record => record.event.kind === 'optimizer.band_scan' && record.event.payload.phase === 'received').length};
 }
 
+// Mesh devices on the lab's controller that the room does not own (a physical OpenSync pod
+// joined to the RDK lab), by AL MAC: the VM's /etc/easymesh-lab/foreign-devices, the file
+// the room service reads (easymesh-medium's mesh health, the optimizer's observer). The
+// topology view's nodes, stations and edges of these are not the room's.
+function parseForeignDevices(text) {
+  const macs = [...new Set(String(text || '').split('\n').map(line => lower(line.split('#')[0].trim())).filter(Boolean))];
+  const malformed = macs.filter(mac => !/^[0-9a-f]{2}(:[0-9a-f]{2}){5}$/.test(mac));
+  if (malformed.length) throw new Error('foreign devices: not an AL MAC: ' + malformed.join(', '));
+  return macs;
+}
+
+async function foreignDevices(args) {
+  if (args.flavor !== 'rdk') return [];
+  const command = 'lxc exec ' + quote(args.vm) + ' -- sh -c ' +
+    quote('[ ! -e /etc/easymesh-lab/foreign-devices ] || cat /etc/easymesh-lab/foreign-devices');
+  return parseForeignDevices((await execFileAsync(...hostCommand(args.host, command), {timeout: 30000})).stdout);
+}
+
 // Topology nodes a room shows: the controller plus one per AP role (six for
 // the lab's own rooms; OpenSync pods through the EMOSA adapter add theirs).
 function expectedMeshCount(world) {
@@ -416,6 +434,8 @@ async function run(args) {
   context.setDefaultTimeout(45000);
   const labOrigins = new Set([args['room-url'], args['topology-url']].map(value => new URL(value).origin));
   report.browserNetwork = 'lab-origins-only';
+  const foreign = await foreignDevices(args);
+  report.foreignDevices = foreign;
   await context.route('**/*', route => {
     const address = new URL(route.request().url());
     return !['http:', 'https:'].includes(address.protocol) || labOrigins.has(address.origin) ?
@@ -538,19 +558,23 @@ async function run(args) {
     const started = performance.now();
     const [current, interactions, view, visibleRoom] = await Promise.all([
       request('/api/demo/current'), request('/api/demo/interactions'),
-      topology.evaluate(() => {
+      topology.evaluate(foreign => {
         const instance = window.EasyMeshController;
-        const nodes = instance?.topology?.nodes || [];
-        return {meshCount: document.querySelectorAll('#topology-visualization .nodes .node').length,
-          stations: [...document.querySelectorAll('#topology-visualization .sta-node')].map(element => ({
+        const own = id => !foreign.includes(String(id ?? '').toLowerCase());
+        const nodes = (instance?.topology?.nodes || []).filter(node => own(node.id));
+        return {meshCount: [...document.querySelectorAll('#topology-visualization .nodes .node')]
+            .filter(element => own(element.__data__?.id)).length,
+          stations: [...document.querySelectorAll('#topology-visualization .sta-node')]
+            .filter(element => own(element.__data__?.nodeRef?.id)).map(element => ({
             mac: element.__data__?.sta?.staMAC, bssid: element.__data__?.sta?.bssid,
             ssid: element.__data__?.sta?.ssid, band: element.__data__?.sta?.band, owner: String(element.__data__?.nodeRef?.id),
             label: element.querySelector('.sta-identity-label')?.textContent,
             visible: element.getBoundingClientRect().width > 0,
           })),
           modelStations: nodes.flatMap(node => (node.STAList || []).map(sta => ({mac: sta.staMAC, bssid: sta.bssid, ssid: sta.ssid, band: sta.band}))),
-          edges: (instance?.topology?.edges || []).map(edge => ({from: String(edge.from), to: String(edge.to)}))};
-      }),
+          edges: (instance?.topology?.edges || []).filter(edge => own(edge.from) && own(edge.to))
+            .map(edge => ({from: String(edge.from), to: String(edge.to)}))};
+      }, foreign),
       room.evaluate(() => {
         const roles = {};
         window.__scene?.traverse(object => {
@@ -933,6 +957,6 @@ function kernelClientAudit(bindings, wanted, associations, links) {
   return {onlineCount: online.size, offlineCount: bound.size - online.size, passed: errors.length === 0, errors, links};
 }
 
-module.exports = {argumentsFrom, worldApplyResponse, expectedFrame, evaluate, distribution, eventPerformance, viewAgreement, recordedEventKind, fronthaulOutages, bandExpectations, bandSteeringSummary, bandNativeErrors, kernelClientAudit, reauditOwners, trafficExperimentSummary, qualificationFailures, apExpectations};
+module.exports = {argumentsFrom, parseForeignDevices, worldApplyResponse, expectedFrame, evaluate, distribution, eventPerformance, viewAgreement, recordedEventKind, fronthaulOutages, bandExpectations, bandSteeringSummary, bandNativeErrors, kernelClientAudit, reauditOwners, trafficExperimentSummary, qualificationFailures, apExpectations};
 if (require.main === module) run(argumentsFrom(process.argv.slice(2))).then(report => { process.exitCode = report.passed ? 0 : 1; })
   .catch(error => { console.error(error); process.exitCode = 2; });

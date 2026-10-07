@@ -2,8 +2,16 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const {argumentsFrom, expectedFrame, evaluate, distribution, eventPerformance, viewAgreement, recordedEventKind, kernelClientAudit, qualificationFailures} = require('./room-feature-acceptance.js');
+const {argumentsFrom, parseForeignDevices, expectedFrame, evaluate, distribution, eventPerformance, viewAgreement, recordedEventKind, kernelClientAudit, qualificationFailures} = require('./room-feature-acceptance.js');
 const harnessSource = fs.readFileSync(path.join(__dirname, 'room-feature-acceptance.js'), 'utf8');
+// the devices the room does not own (the VM's foreign-devices file): MACs, comments, blank
+// lines, duplicates once; anything else an error; the view's nodes, stations and edges filtered
+assert.deepEqual(parseForeignDevices('# opensync-rpi\n02:C0:9E:DF:C1:A2  # pi1\n\n02:c0:9e:df:c1:a2\n'), ['02:c0:9e:df:c1:a2']);
+assert.deepEqual(parseForeignDevices(''), []);
+assert.throws(() => parseForeignDevices('02:c0:9e:df:c1\n'), /not an AL MAC/);
+assert.match(harnessSource, /filter\(element => own\(element\.__data__\?\.id\)\)\.length/);
+assert.match(harnessSource, /filter\(element => own\(element\.__data__\?\.nodeRef\?\.id\)\)/);
+assert.match(harnessSource, /\}, foreign\),/);
 assert.match(harnessSource, /movingCapture = screenshot\('moving'\)\.catch/);
 assert.doesNotMatch(harnessSource, /await screenshot\('moving'\)/);
 assert.match(harnessSource, /finally \{\s*await movingCapture;/);
