@@ -957,6 +957,6 @@ function kernelClientAudit(bindings, wanted, associations, links) {
   return {onlineCount: online.size, offlineCount: bound.size - online.size, passed: errors.length === 0, errors, links};
 }
 
-module.exports = {argumentsFrom, parseForeignDevices, worldApplyResponse, expectedFrame, evaluate, distribution, eventPerformance, viewAgreement, recordedEventKind, fronthaulOutages, bandExpectations, bandSteeringSummary, bandNativeErrors, kernelClientAudit, reauditOwners, trafficExperimentSummary, qualificationFailures, apExpectations};
+module.exports = {argumentsFrom, parseForeignDevices, foreignDevices, worldApplyResponse, expectedFrame, evaluate, distribution, eventPerformance, viewAgreement, recordedEventKind, fronthaulOutages, bandExpectations, bandSteeringSummary, bandNativeErrors, kernelClientAudit, reauditOwners, trafficExperimentSummary, qualificationFailures, apExpectations};
 if (require.main === module) run(argumentsFrom(process.argv.slice(2))).then(report => { process.exitCode = report.passed ? 0 : 1; })
   .catch(error => { console.error(error); process.exitCode = 2; });

@@ -7,7 +7,7 @@ const os = require('os');
 const {execFile} = require('child_process');
 const util = require('util');
 const {promisify} = util;
-const {kernelClientAudit, reauditOwners} = require('./room-feature-acceptance.js');
+const {kernelClientAudit, reauditOwners, foreignDevices} = require('./room-feature-acceptance.js');
 const execute = promisify(execFile);
 const {hostCommand, guestAuditInstallCommand, startHostMonitor} = require('./room-host-monitor.js');
 const {launchBrowser, rendererUsable} = require('./browser-renderer.js');
@@ -194,6 +194,9 @@ async function run(options) {
     started: new Date().toISOString(), scope: 'Geometry-room playback, native parent/traffic convergence and restoration; bounded, not a soak',
     rooms: [], errors: [], featureChecksPassed: false, recoveryPassed: false};
   await execute(...guestAuditInstallCommand(options.host, options.vm), {timeout: 30000, maxBuffer: 1048576});
+  // devices the room does not own (the VM's foreign-devices file): out of the topology samples
+  const foreign = await foreignDevices({...options, flavor});
+  report.foreignDevices = foreign;
   const {chromium} = require(process.env.PLAYWRIGHT_MODULE || 'playwright-core');
   const environment = {...process.env};
   delete environment.DISPLAY;
@@ -294,13 +297,16 @@ async function run(options) {
   async function sample(label, includeNative = false) {
     const [state, interactions, topology, visible] = await Promise.all([
       request('/api/demo/current'), request('/api/demo/interactions'),
-      topologyPage.evaluate(() => {
+      topologyPage.evaluate(foreign => {
         const instance = window.EasyMeshController;
-        return {nodes: (instance?.topology?.nodes || []).map(node => ({id: node.id, name: node.name})),
-          edges: (instance?.topology?.edges || []).map(edge => ({from: String(edge.from), to: String(edge.to)})),
-          stations: [...document.querySelectorAll('#topology-visualization .sta-node')].map(element => ({
-            mac: element.__data__?.sta?.staMAC, bssid: element.__data__?.sta?.bssid}))};
-      }),
+        const own = id => !foreign.includes(String(id ?? '').toLowerCase());
+        return {nodes: (instance?.topology?.nodes || []).filter(node => own(node.id)).map(node => ({id: node.id, name: node.name})),
+          edges: (instance?.topology?.edges || []).filter(edge => own(edge.from) && own(edge.to))
+            .map(edge => ({from: String(edge.from), to: String(edge.to)})),
+          stations: [...document.querySelectorAll('#topology-visualization .sta-node')]
+            .filter(element => own(element.__data__?.nodeRef?.id)).map(element => ({
+              mac: element.__data__?.sta?.staMAC, bssid: element.__data__?.sta?.bssid}))};
+      }, foreign),
       roomPage.evaluate(() => ({policy: document.getElementById('backhaulPolicyTitle').textContent,
         clock: document.getElementById('tnow').textContent, meta: document.getElementById('worldmeta').textContent,
         optimizer: document.getElementById('optimizerStatus').textContent})),
