@@ -278,14 +278,23 @@ function evaluate(current, interactions, view, world, bindings, now = Date.now()
     mediumFault, bandErrors};
 }
 
+// A client has left an AP that is down 5 s into its outage; a 6 GHz client 8 s: it scans
+// every 6 GHz channel, and the PMF it must use answers its association with a comeback
+// while the next AP still holds its earlier one (a roam sends no deauth). Measured on the
+// RDK lab's wired extender, 6 October: 3.7 to 4.5 s, seen at the next sample.
+const OUTAGE_GRACE_MS = 5000;
+const OUTAGE_GRACE_6GHZ_MS = 8000;
+const outageGraceMs = client => client.band === '6' ? OUTAGE_GRACE_6GHZ_MS : OUTAGE_GRACE_MS;
+
 function fronthaulOutages(world, samples) {
   return Object.entries(world.roles).filter(([, kind]) => kind === 'fronthaul_ap').flatMap(([role]) => {
     const start = world.generations.find(frame => !frame.present[role])?.time_ms;
     if (start === undefined) return [];
     const end = world.generations.find(frame => frame.time_ms > start && frame.present[role])?.time_ms ?? world.duration_ms + 1;
-    const checked = samples.filter(sample => sample.phase === 'playing' && sample.playback.time_ms >= start + 5000 && sample.playback.time_ms < end);
+    const checked = samples.filter(sample => sample.phase === 'playing' && sample.playback.time_ms >= start + OUTAGE_GRACE_MS && sample.playback.time_ms < end);
     return [{role, startMs: start, endMs: end, samples: checked.length,
-      remainingAssociations: checked.filter(sample => (sample.roomAssociations || []).some(client => client.ap === role)).map(sample => sample.playback.time_ms),
+      remainingAssociations: checked.filter(sample => (sample.roomAssociations || []).some(client =>
+        client.ap === role && sample.playback.time_ms >= start + outageGraceMs(client))).map(sample => sample.playback.time_ms),
       meshConnected: checked.every(sample => sample.meshConnected && sample.meshViewMatches)}];
   });
 }
