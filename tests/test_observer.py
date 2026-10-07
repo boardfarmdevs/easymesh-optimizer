@@ -30,6 +30,35 @@ def test_topology_projection_does_not_wait_for_any_metric_endpoint_or_probe():
         observer.observe_topology()
 
 
+def test_foreign_devices_are_left_out_of_every_inventory(tmp_path, monkeypatch):
+    # a physical pod joined to the lab's controller (opensync-rpi), listed in the foreign
+    # devices file: its node, device, BSS and the client on it are not the room's
+    listed = tmp_path / "foreign-devices"
+    listed.write_text("# opensync-rpi\n02:C0:9E:DF:C1:A2  # pi1\n")
+    monkeypatch.setenv("EASYMESH_FOREIGN_DEVICES", str(listed))
+    own = {"staMAC": "02:00:00:00:03:00", "bssid": "02:00:00:00:01:01", "band": 1}
+    theirs = {"staMAC": "aa:00:00:00:00:01", "bssid": "02:c0:9e:00:00:01", "band": 1}
+    payloads = {
+        "topology": {"nodes": [{"id": "02:00:00:00:01:20", "haulTypes": [{}], "STAList": [own]},
+                               {"id": "02:c0:9e:df:c1:a2", "haulTypes": [{}], "STAList": [theirs]}]},
+        "devices": {"devices": [{"mac": "02:00:00:00:01:20"}, {"mac": "02:c0:9e:df:c1:a2"}]},
+        "bsses": {"bsses": [{"bssid": "02:00:00:00:01:01", "device_id": "02:00:00:00:01:20"},
+                            {"bssid": "02:c0:9e:00:00:01", "device_id": "02:c0:9e:df:c1:a2"}]},
+        "clients": {"clients": [{"mac": own["staMAC"], "connected_ap_mac": "02:00:00:00:01:20"},
+                                {"mac": theirs["staMAC"], "connected_ap_mac": "02:c0:9e:df:c1:a2"}]},
+    }
+    observer = ControllerObserver("http://controller",
+                                  fetcher=lambda url: payloads[url.rsplit("/", 1)[-1]])
+    snapshot = observer.observe_topology()
+    assert snapshot.health.devices == 1
+    assert [client.sta_mac for client in snapshot.clients] == [own["staMAC"]]
+    for endpoint, field in (("devices", "devices"), ("bsses", "bsses"), ("clients", "clients")):
+        assert len(observer._get(f"/api/v1/{endpoint}")[field]) == 1
+    listed.write_text("02:c0:9e:df:c1\n")
+    with pytest.raises(ValueError, match="not an AL MAC"):
+        observer.observe_topology()
+
+
 def test_missing_or_wrong_ap_metrics_do_not_remove_clients_or_relabel_measurements():
     station = {"staMAC": "02:00:00:00:03:00", "bssid": "02:00:00:00:01:01", "band": 1}
     fetcher = Mock(return_value={"nodes": [{"id": "02:00:00:00:01:20", "STAList": [station]}]})

@@ -3,6 +3,9 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from dataclasses import replace
 import json
+import os
+from pathlib import Path
+import re
 import time
 from typing import Any, Callable, Iterable
 from urllib.request import urlopen
@@ -37,6 +40,30 @@ CandidateProvider = Callable[
 def _default_fetch(url: str) -> dict[str, Any]:
     with urlopen(url, timeout=5) as response:  # nosec: operator-supplied lab endpoint
         return json.load(response)
+
+
+# Mesh devices on the lab's controller that the room does not own, by AL MAC, one per line
+# (# comments): a physical OpenSync pod joined to the RDK lab (opensync-rpi). The controller
+# observer leaves them out: their topology nodes, devices and BSSes and the clients on them.
+# easymesh-medium's mesh health reads the same file (wmdcfg.observers.foreign_devices).
+FOREIGN_DEVICES = "/etc/easymesh-lab/foreign-devices"
+_FOREIGN_KEYS = {"nodes": "id", "devices": "mac", "bsses": "device_id", "clients": "connected_ap_mac"}
+_MAC = re.compile(r"^[0-9a-f]{2}(:[0-9a-f]{2}){5}$")
+
+
+def foreign_devices() -> frozenset[str]:
+    """The AL MACs in EASYMESH_FOREIGN_DEVICES (a file, default FOREIGN_DEVICES); none
+    when it is absent. A line that is not a MAC address is an error."""
+    path = Path(os.environ.get("EASYMESH_FOREIGN_DEVICES", FOREIGN_DEVICES))
+    try:
+        text = path.read_text()
+    except FileNotFoundError:
+        return frozenset()
+    macs = {line.split("#", 1)[0].strip().lower() for line in text.splitlines()} - {""}
+    malformed = sorted(mac for mac in macs if not _MAC.match(mac))
+    if malformed:
+        raise ValueError(f"{path}: not an AL MAC: {', '.join(malformed)}")
+    return frozenset(macs)
 
 
 def _topology_client_context(topology: dict[str, Any]) -> dict[str, dict[str, Any]]:
@@ -128,6 +155,11 @@ class ControllerObserver:
             rows = payload.get(field, [])
             if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
                 raise ControllerInventoryUnavailable(f"controller {field} inventory unavailable or malformed")
+            foreign = foreign_devices()
+            if foreign:
+                key = _FOREIGN_KEYS[field]
+                payload = {**payload, field: [row for row in rows
+                                              if str(row.get(key) or "").lower() not in foreign]}
         return payload
 
     def coordination_capabilities(self) -> dict[str, Any]:
