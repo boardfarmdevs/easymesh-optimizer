@@ -21,8 +21,8 @@ and SSE at the same origin. LXD proxy devices persist across VM restarts.
 
 ## Private remote use
 
-In the RDK lab, for browser access to all three views, use the optional
-the Tailscale gateway (the RDK lab's `gen/remote-access`, in [meta-cmf-bananapi-vcpe](https://vcpe.dev/meta-cmf-bananapi-vcpe/)). Its setup scripts provide private Serve access or authenticated public
+For browser access to all three views from elsewhere, use the hosts' gateway,
+[easymesh-remote](https://vcpe.dev/easymesh-remote/). It provides private Serve access or authenticated public
 Funnel access, with one shared timed reservation, visible ownership and
 direct-port protection.
 
