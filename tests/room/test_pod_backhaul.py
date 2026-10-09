@@ -2,10 +2,11 @@
 from __future__ import annotations
 
 import re
+import types
 import unittest
 
 from room_service.backhaul import PodBackhaul, channel_of
-from room_service.interactions import pod_station_keys
+from room_service.interactions import InteractiveMediumSession, pod_station_keys
 
 POD = {
     "role_type": "fronthaul_ap", "container": "pod-1", "adapter": "emosa",
@@ -281,6 +282,15 @@ class PodBackhaulMoveTests(unittest.TestCase):
             sleep=lambda seconds: now.__setitem__(0, now[0] + seconds), clock=lambda: now[0], timeout=10)
         with self.assertRaisesRegex(RuntimeError, "did not move to extender_1"):
             pods.move("pod_1", "extender_1")
+
+
+class CatalogTests(unittest.TestCase):
+    def test_the_catalog_names_the_adapters_aps_and_their_containers(self):
+        session = types.SimpleNamespace(worlds=types.SimpleNamespace(catalog=lambda: {"worlds": []}),
+                                        plan=plan(), world={"wired_backhaul": ["extender_5"]})
+        catalog = InteractiveMediumSession.world_catalog(session)
+        self.assertEqual(catalog["adapter_bindings"], {"pod_1": "pod-1", "pod_2": "pod-2"})
+        self.assertEqual(catalog["wired_bindings"], {"extender_5": "bpiap-004"})
 
 
 class ChannelTests(unittest.TestCase):

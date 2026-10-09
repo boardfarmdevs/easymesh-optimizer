@@ -93,4 +93,22 @@ assert.equal(meshLoss([], 5), -1);
 assert.match(harness, /report\.startParents = \(await sample\('start', true\)\)\.native\.parents;\s*for \(const id of selectedRooms\)/);
 assert.match(harness, /if \(report\.recoveryPassed\) \{\s*const hold = [\s\S]*?meshLoss\(entries, profile\.healthNodes\) !== -1\) \{\s*report\.recoveryPassed = false;/);
 assert.match(harness, /util\.isDeepStrictEqual\(entry\.native\.parents, report\.startParents\)[\s\S]*?until = Math\.min\(limit, Date\.now\(\) \+ HOLD_AFTER_START_PARENTS_MS\)/);
-console.log('PASS: backhaul AP readiness, native parents, traffic, missing-observation classification and the recovery hold');
+const {podState, podChain, podsUnchained} = require('./room-backhaul-features.js');
+const chainedPod = podState('AP=02:00:00:00:22:24\nSTATION=bhaul-sta-50 \nSTATION=bhaul-sta-24 Connected to 02:00:00:00:21:24 (on bhaul-sta-24)\n');
+assert.deepEqual(chainedPod, {apBssid: '02:00:00:00:22:24', station: 'bhaul-sta-24', parentBssid: '02:00:00:00:21:24',
+  connectedStations: 1});
+assert.deepEqual(podState('AP=\nSTATION=bhaul-sta-50 Not connected.\nSTATION=bhaul-sta-24 \n'),
+  {apBssid: null, station: null, parentBssid: null, connectedStations: 0});
+const chain = {pods: {pod_1: {parent: 'extender_1', station: 'bhaul-sta-50'}, pod_2: {parent: 'pod_1', station: 'bhaul-sta-24'}},
+  mesh: {backhaul_edges: [{child_role: 'pod_1', parent_role: 'extender_1'}, {child_role: 'pod_2', parent_role: 'pod_1'}]}};
+assert.equal(podChain(chain), true);
+assert.equal(podChain({...chain, mesh: {backhaul_edges: [{child_role: 'pod_2', parent_role: 'gateway'}]}}), false,
+  'The controller must model pod_2 under pod_1 too');
+assert.equal(podChain({...chain, pods: {...chain.pods, pod_2: {parent: 'pod_1', station: 'bhaul-sta-50'}}}), false);
+assert.equal(podChain({...chain, pods: {...chain.pods, pod_1: {parent: 'pod_2'}}}), false, 'pod_1 must be under a native AP');
+assert.equal(podsUnchained(chain), false);
+assert.equal(podsUnchained({pods: {pod_1: {parent: 'extender_1'}, pod_2: {parent: 'gateway'}}}), true);
+assert.equal(podsUnchained({pods: {pod_1: {parent: 'extender_1'}, pod_2: {parent: null}}}), false, 'A pod without a parent is not recovered');
+assert.equal(podsUnchained({}), true, 'A lab without pods');
+assert.match(harness, /if \(ready\(recovery, profile\.healthNodes, 20\) && podsUnchained\(recovery\)\)/);
+console.log('PASS: backhaul AP readiness, native parents, traffic, missing-observation classification, the recovery hold and the pod chain');

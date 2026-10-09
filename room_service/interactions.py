@@ -704,6 +704,13 @@ class InteractiveMediumSession:
                 role: self.plan["bindings"].get(role, {}).get("container")
                 for role in self.world.get("wired_backhaul", [])
             },
+            # the APs an adapter manages (OpenSync pods through EMOSA) and their containers:
+            # the geometry rooms read their backhaul parents (backhaul.PodBackhaul)
+            "adapter_bindings": {
+                role: binding.get("container")
+                for role, binding in sorted(self.plan["bindings"].items())
+                if binding["role_type"] == "fronthaul_ap" and binding.get("adapter")
+            },
         }
 
     def _room_updates(self) -> list[dict[str, Any]]:

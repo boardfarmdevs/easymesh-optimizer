@@ -14,6 +14,8 @@ const {launchBrowser, rendererUsable} = require('./browser-renderer.js');
 const rooms = ['backhaul-branch-formation', 'backhaul-parent-handover', 'backhaul-isolation-recovery'];
 // Only in the room sets with the wired extender (worlds-wired): run when the catalog has it.
 const wiredRooms = ['backhaul-wired-parent'];
+// Only in the room sets with the OpenSync pods (worlds-pods): run when the catalog has it.
+const podRooms = ['backhaul-pod-chain'];
 const delay = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds));
 // A loaded geometry room converges like a catalog room (room-feature-acceptance
 // --initial-timeout, 90 s), and its load also re-parents the native backhaul.
@@ -93,6 +95,9 @@ let adapterNodes = 0;
 // The APs on a wired backhaul (role -> container), from the room's catalog: read like the
 // lab's own nodes; each is a child of the gateway over its LAN port, never over Wi-Fi.
 let wiredContainers = {};
+// The APs an adapter manages (role -> container), from the room's catalog: their backhaul
+// parents are read from their own stations (podParents).
+let adapterContainers = {};
 
 // Every mesh node in the controller's model: the room's health and the topology view.
 function meshComplete(entry, healthNodes) {
@@ -122,6 +127,30 @@ function ready(entry, healthNodes, clients = 10) {
     entry.health?.healthy && meshComplete(entry, healthNodes) && entry.health.api_active === clients &&
     entry.optimizer?.fleet?.converged === true &&
     new Set(entry.topology.stations.map(station => station.mac)).size === clients;
+}
+
+// A pod's backhaul as its own stations see it: its 2.4 GHz backhaul BSS (b-ap-24), and the
+// station that is connected (bhaul-sta-50 or bhaul-sta-24) with its parent BSSID.
+function podState(raw) {
+  const connected = [...String(raw).matchAll(/^STATION=(\S+) Connected to ([0-9a-f:]{17})/gmi)];
+  return {apBssid: String(raw).match(/^AP=([0-9a-f:]{17})/mi)?.[1]?.toLowerCase() || null,
+    station: connected[0]?.[1] || null, parentBssid: connected[0]?.[2]?.toLowerCase() || null,
+    connectedStations: connected.length};
+}
+
+// backhaul-pod-chain: pod_2 on pod_1's 2.4 GHz backhaul BSS with its 2.4 GHz station, natively
+// and in the controller's model, and pod_1 under a native AP.
+function podChain(entry) {
+  const pods = entry.pods || {};
+  return pods.pod_2?.parent === 'pod_1' && pods.pod_2?.station === 'bhaul-sta-24' &&
+    Boolean(pods.pod_1?.parent) && !Object.hasOwn(pods, pods.pod_1.parent) &&
+    Boolean(entry.mesh?.backhaul_edges?.some(edge => edge.child_role === 'pod_2' && edge.parent_role === 'pod_1'));
+}
+
+// Every pod under a native AP: outside the rooms that model the backhaul none is left under
+// another pod (room_service.backhaul.PodBackhaul.arrange).
+function podsUnchained(entry) {
+  return Object.values(entry.pods || {}).every(pod => Boolean(pod.parent) && !Object.hasOwn(entry.pods, pod.parent));
 }
 
 function nativeCycles(parents) {
@@ -181,11 +210,12 @@ async function run(options) {
   assert.equal(options['yes-act'], 'true', 'Explicit --yes-act true is required; these rooms change live RF and can interrupt service');
   assert.match(options['room-url'], /^https?:\/\/.+/, usage());
   assert.match(options['topology-url'], /^https?:\/\/.+/, usage());
-  let selectedRooms = options.room ? [options.room] : [...rooms, ...wiredRooms];
+  let selectedRooms = options.room ? [options.room] : [...rooms, ...wiredRooms, ...podRooms];
   const flavor = options.flavor || 'rdk';
   const profile = stackProfile(flavor);
   const containers = profile.containers;
-  assert.ok(selectedRooms.every(id => rooms.includes(id) || wiredRooms.includes(id)), 'Unknown geometry room');
+  assert.ok(selectedRooms.every(id => rooms.includes(id) || wiredRooms.includes(id) || podRooms.includes(id)),
+    'Unknown geometry room');
   const directory = path.resolve(options.output);
   assert.ok(!fs.existsSync(directory), 'Use a new output directory');
   fs.mkdirSync(directory, {recursive: true});
@@ -274,6 +304,22 @@ async function run(options) {
     return {nodes, parents, paths: parentPaths(parents)};
   }
 
+  async function podParents(nativeNodes) {
+    const script = 'printf "AP=%s\\n" "$(cat /sys/class/net/b-ap-24/address 2>/dev/null)"; for s in bhaul-sta-50 bhaul-sta-24; do printf "STATION=%s %s\\n" "$s" "$(iw dev $s link 2>/dev/null | head -1)"; done';
+    const readings = await Promise.all(Object.entries(adapterContainers).map(async ([role, container]) => {
+      try {
+        const result = await execute(...hostCommand(options.host,
+          'lxc exec ' + options.vm + ' -- lxc exec ' + container + " -- sh -c '" + script + "'"),
+        {timeout: 12000, maxBuffer: 65536});
+        return [role, {...podState(result.stdout), raw: result.stdout}];
+      } catch (error) { return [role, {error: error.message}]; }
+    }));
+    const owners = Object.fromEntries([
+      ...Object.entries(nativeNodes).filter(([, value]) => value.apBssid).map(([role, value]) => [value.apBssid, role]),
+      ...readings.filter(([, value]) => value.apBssid).map(([role, value]) => [value.apBssid, role])]);
+    return Object.fromEntries(readings.map(([role, value]) => [role, {...value, parent: owners[value.parentBssid] || null}]));
+  }
+
   async function auditClientsOnce(observation) {
     const mapping = Object.fromEntries(Object.entries(bindings).map(([role, client]) => [role, client.container]));
     assert.ok(Object.values(mapping).every(value => /^(?:prpl-client-[0-9]{2,3}|wlan-client(?:-[0-9]{3})?)$/.test(value)));
@@ -315,6 +361,7 @@ async function run(options) {
       health: state.health, mesh: state.network?.mesh, clients: state.network?.clients, optimizer: state.optimizer,
       native: includeNative ? await native() : undefined};
     if (includeNative) result.nativeCycles = nativeCycles(result.native.parents);
+    if (includeNative && Object.keys(adapterContainers).length) result.pods = await podParents(result.native.nodes);
     if (currentRoom) currentRoom.samples.push(result);
     return result;
   }
@@ -368,6 +415,8 @@ async function run(options) {
     adapterNodes = Math.max(0, (catalog.mesh_devices ?? 5) - 5);
     wiredContainers = catalog.wired_bindings || {};
     for (const container of Object.values(wiredContainers)) assert.match(String(container), /^[a-zA-Z0-9_.-]+$/);
+    adapterContainers = catalog.adapter_bindings || {};
+    for (const container of Object.values(adapterContainers)) assert.match(String(container), /^[a-zA-Z0-9_.-]+$/);
     bindings = catalog.client_bindings;
     assert.equal(Object.keys(bindings).length, 100);
     for (const id of rooms) assert.equal(catalog.worlds.find(entry => entry.id === id)?.backhaul_rf, 'geometry');
@@ -402,6 +451,42 @@ async function run(options) {
         currentRoom.initialConvergenceVerified = true;
         currentRoom.initialKernel = await auditClients(loaded);
         currentRoom.initialParents = loaded.native.parents;
+      }
+      if (podRooms.includes(id)) {
+        // a static room: the pods' parents at its start, held through it
+        const deadline = Date.now() + 60000;
+        let observation = loaded;
+        while (!podChain(observation) && Date.now() < deadline) {
+          await delay(1000);
+          observation = await sample('pod-chain', true);
+        }
+        currentRoom.podOutcome = {chainVerified: podChain(observation),
+          pods: Object.fromEntries(Object.entries(observation.pods || {}).map(([role, value]) =>
+            [role, {parent: value.parent, station: value.station, parentBssid: value.parentBssid, error: value.error}])),
+          edges: observation.mesh?.backhaul_edges};
+        assert.equal(currentRoom.podOutcome.chainVerified, true,
+          'The pod chain was not verified: ' + JSON.stringify(currentRoom.podOutcome));
+        await roomPage.bringToFront();
+        await roomPage.screenshot({path: path.join(directory, id + '-room.png')});
+        await topologyPage.bringToFront();
+        await topologyPage.screenshot({path: path.join(directory, id + '-topology.png')});
+        currentRoom.midpoint = await playTo(12000);
+        currentRoom.finish = await playTo(24000);
+        const held = [];
+        for (let index = 0; index < 3; index++) {
+          held.push(await sample('pod-chain-held-' + index, true));
+          if (index < 2) await delay(1500);
+        }
+        currentRoom.podOutcome.chainHeld = held.every(entry => podChain(entry) && ready(entry, profile.healthNodes)) &&
+          meshLoss(currentRoom.samples, profile.healthNodes) === -1;
+        assert.equal(currentRoom.podOutcome.chainHeld, true, 'The pod chain or the room did not hold: ' +
+          JSON.stringify(convergenceDiagnostics(held.at(-1))));
+        currentRoom.returnKernel = await auditClients(held.at(-1));
+        currentRoom.featureChecksPassed = true;
+        currentRoom.status = 'passed';
+        save(id + '.json', currentRoom);
+        console.log(JSON.stringify({room: id, featureChecksPassed: true, pods: currentRoom.podOutcome.pods}));
+        continue;
       }
       if (id === 'backhaul-isolation-recovery') {
         const deadline = Date.now() + 15000;
@@ -530,7 +615,7 @@ async function run(options) {
         while (Date.now() < deadline) {
           const recovery = await sample('default-recovery', true);
           report.recovery = recovery;
-          if (ready(recovery, profile.healthNodes, 20)) {
+          if (ready(recovery, profile.healthNodes, 20) && podsUnchained(recovery)) {
             report.recoveryPassed = true;
             break;
           }
@@ -588,7 +673,7 @@ async function run(options) {
 }
 
 module.exports = {summarizeNative, interfaceState, stackProfile, ready, meshComplete, meshLoss, parentPaths, nativeCycles,
-  convergenceDiagnostics};
+  convergenceDiagnostics, podState, podChain, podsUnchained};
 if (require.main === module) {
   let options;
   try { options = optionsFrom(process.argv.slice(2)); }
