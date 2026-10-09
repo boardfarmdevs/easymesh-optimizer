@@ -92,3 +92,18 @@ def test_missing_cancelled_old_or_unmeasured_traffic_cannot_pass():
 def test_guest_command_supports_outer_host_without_ssh_and_explicit_remote():
     assert MODULE.guest_command("local", "fixture", "true") == ["lxc", "exec", "fixture", "--", "true"]
     assert MODULE.guest_command("rev140", "demo-a", "true")[-6:] == ["rev140", "lxc", "exec", "demo-a", "--", "true"]
+
+
+def test_the_results_of_the_labs_composition_of_the_room_count():
+    # rdk-1009, 9 October: a lab with a wired extender plays its composition of the golden
+    # world (another digest); every phase ran and all were "missing" against the golden file's
+    world, sample = traffic()
+    sample["history"][0]["world_sha256"] = "composed"
+    sample["history"][0]["key"][0] = "composed"
+    sample["world_sha256"] = "composed"
+    assert MODULE.traffic_errors(world, sample) == []
+    # a room that ran no phase still shows the last one's digest: an earlier room's is no result
+    assert MODULE.traffic_errors(world, sample, {"composed"}) == ["phase 0: missing traffic result"]
+    # nor is another world's result when the service names the room's
+    sample["world_sha256"] = "elsewhere"
+    assert MODULE.traffic_errors(world, sample) == ["phase 0: missing traffic result"]

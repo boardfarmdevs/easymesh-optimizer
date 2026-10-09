@@ -78,13 +78,21 @@ def native_records(inspection, client, now):
     return result
 
 
-def traffic_errors(world, traffic):
+def traffic_errors(world, traffic, earlier=()):
+    """The room's traffic phases (``world``'s) against the results of the world the room service
+    played: its digest is the service's (``traffic["world_sha256"]``), which on a lab with a
+    wired extender or pods is the lab's composition of the golden world (rdk-1009, 9 October:
+    every phase ran, and all were "missing" against the golden file's digest). The state keeps
+    the last phase's digest: one of an ``earlier`` room's means this room ran none."""
     errors = []
     if traffic.get("state") != "off":
         errors.append("experimental traffic did not stop")
+    played = traffic.get("world_sha256")
+    if not played or played in earlier:
+        played = world["golden_sha256"]
     for index, phase in enumerate(world["traffic_experiment"]["phases"]):
         rows = [row for row in traffic.get("history", [])
-                if row.get("world_sha256") == world["golden_sha256"]
+                if row.get("world_sha256") == played
                 and row.get("key", [None, None, None])[2] == index]
         if not rows:
             errors.append(f"phase {index}: missing traffic result")
@@ -197,6 +205,7 @@ def main():
         report["catalog"] = request("rf-catalog")
         token = request("interactions/lease", {"owner": "rf-property-rooms-smoke"})["token"]
         renewed = time.monotonic()
+        played_before = set()
         for name in ROOMS:
             result = {"room": name, "passed": False, "samples": [], "errors": []}
             report["rooms"].append(result)
@@ -229,7 +238,14 @@ def main():
             result["observed_properties"] = sorted(properties)
             result["errors"] += ["no fresh owned native " + name for name in sorted(
                 (COUNTERS | {"native_utilization", "station_count"}) - properties)]
-            result["errors"] += traffic_errors(world, room["traffic_experiment"])
+            # the room service plays the room, or the lab's composition of it (LAYOUT--ROOM)
+            selected = room.get("selected_world") or ""
+            if selected != name and not selected.endswith("--" + name):
+                result["errors"].append(f"the room service played {selected or 'nothing'}, not {name}")
+            result["played_world"] = selected
+            result["played_world_sha256"] = room["traffic_experiment"].get("world_sha256")
+            result["errors"] += traffic_errors(world, room["traffic_experiment"], played_before)
+            played_before.add(result["played_world_sha256"])
             result["passed"] = not result["errors"]
             save()
             print(json.dumps({"room": name, "passed": result["passed"], "errors": result["errors"],
