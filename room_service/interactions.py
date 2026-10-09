@@ -26,10 +26,12 @@ from wmdcfg.traffic_profile import validate_traffic
 def pod_station_keys(ap_binding, peer_binding, outgoing, incoming):
     """RF keys between an OpenSync pod's backhaul station and a native AP's 5 GHz radio.
 
-    A pod (adapter, EMOSA) serves 2.4 GHz only; its backhaul station joins a
-    native AP's 5 GHz backhaul BSS. ``outgoing`` and ``incoming`` are the AP
-    pair's links as seen from ``ap_binding``. None between two pods: a pod is
-    never another pod's parent.
+    A pod (adapter, EMOSA) serves 2.4 GHz only; its 5 GHz backhaul station, on a
+    radio of its own, joins a native AP's 5 GHz backhaul BSS. ``outgoing`` and
+    ``incoming`` are the AP pair's links as seen from ``ap_binding``. None between
+    two pods: a pod parent's backhaul BSS is on its 2.4 GHz radio, and the child's
+    2.4 GHz station shares the child's 2.4 GHz radio, so the pods' 2.4 GHz AP-AP
+    link is theirs (backhaul.PodBackhaul).
     """
     keys = []
     for pod, native, to_native, from_native in (
@@ -152,7 +154,7 @@ class InteractiveMediumSession:
         model_backhaul: bool = False,
         band_profiles: Any = None,
         prepare_backhaul: Callable[[], Any] | None = None,
-        pod_backhaul: Callable[[dict[str, Any]], Any] | None = None,
+        pod_backhaul: Callable[[dict[str, Any], bool], Any] | None = None,
         wired_rf_needs_guard: bool = True,
     ) -> None:
         self.store = store
@@ -726,14 +728,15 @@ class InteractiveMediumSession:
     def _arrange_pods(self, selection: Any, token: str, expected_revision: Any) -> None:
         """The pods onto their parents before a room that models the backhaul takes their
         current one away: moved under the current RF, where every native AP is within
-        their reach. Outside the lock, which a move would hold for up to a minute."""
+        their reach. Before any other room, a pod a room left under another pod goes back
+        to the gateway (backhaul.PodBackhaul.arrange). Outside the lock, which a move would
+        hold for up to a minute."""
         with self._lock:
             self._validate_mutation(
                 "gateway", token, expected_revision, allowed_roles=self._movable_roles
             )
             world, _ = self.worlds.select(selection)
-        if not (backhaul_rf_policy(world) == "geometry" or self.model_backhaul or self.adaptive_backhaul):
-            return
+        models = backhaul_rf_policy(world) == "geometry" or self.model_backhaul or self.adaptive_backhaul
         # The moves take up to a minute, longer than a lease, and the viewer waits for this
         # request: the requester's lease is kept while they run.
         self.renew(token)
@@ -750,11 +753,12 @@ class InteractiveMediumSession:
         keeper.start()
         try:
             # the native APs' backhaul BSSs first: a Wi-Fi extender starts its own only for a child
-            self._prepare_backhaul_radios()
+            if models:
+                self._prepare_backhaul_radios()
             # and the pods' stations on the lab's own links, where every native AP is within
             # their reach: the room loaded before may be another geometry room
             self._release_pod_stations()
-            result = self.pod_backhaul(world)
+            result = self.pod_backhaul(world, models)
         except InteractionError:
             raise
         except Exception as error:

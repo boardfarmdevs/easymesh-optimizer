@@ -10,6 +10,8 @@ from typing import Any
 
 
 MINIMUM_TREE_GAIN_DB_PER_CHANGE = 2
+# A backhaul link in reach: the native planner's bar for a parent (select_parent)
+USABLE_SNR_DB = 5
 
 
 def path_quality(role, parents, strengths, hop_penalty=3):
@@ -295,6 +297,18 @@ def _run(arguments, timeout=10):
     return result.stdout
 
 
+def channel_of(frequency_mhz):
+    """The channel number of a 2.4, 5 or 6 GHz center frequency."""
+    frequency = int(frequency_mhz)
+    if frequency == 2484:
+        return 14
+    if frequency < 3000:
+        return (frequency - 2407) // 5
+    if frequency >= 5955:
+        return (frequency - 5950) // 5
+    return (frequency - 5000) // 5
+
+
 class PodBackhaul:
     """The OpenSync pods' backhaul parents where the room models the backhaul.
 
@@ -303,64 +317,158 @@ class PodBackhaul:
     AP at the medium's default SNR. Where the room models the backhaul (geometry),
     the pod's station gets the room's links to every native AP (pod_station_keys)
     and the gateway may be out of its reach. So before such a room's RF is applied,
-    each pod is moved to the native AP with the strongest 5 GHz backhaul link in
-    the room's first generation, through the controller's Backhaul Steering
-    (SteerWiFiBackhaul(), which EMOSA carries out). Elsewhere a pod stays where it
-    is: every native AP is within its reach there. A parent is always a native AP:
-    never another pod, nor a wired extender without its HAL guard.
+    each pod is moved to its parent in the room's first generation, through the
+    controller's Backhaul Steering (SteerWiFiBackhaul(), which EMOSA carries out):
+    - a native AP when one is in reach (SNR USABLE_SNR_DB or more on 5 GHz, the
+      native backhaul planner's bar): the strongest. The pod's 5 GHz station, on a
+      radio of its own, is the higher-capacity link and one hop;
+    - else another pod, on 2.4 GHz: the child's 2.4 GHz station on that pod's
+      backhaul BSS (emosa-lab spec 8.3, 8.5), the pod with the best path to the
+      gateway (its bottleneck, less 3 dB per extra hop, as the native planner scores),
+      never one whose own path runs through the child.
+    Elsewhere a pod stays where it is: every native AP is within its reach there. A
+    wired extender without its HAL guard is never a parent.
     """
 
     def __init__(self, plan, *, controller="bpibroadband", timeout=90, run=_run, sleep=time.sleep,
                  clock=time.monotonic):
         bindings = plan["bindings"]
         self.pods = {role: binding for role, binding in bindings.items()
-                     if binding.get("adapter") and binding.get("backhaul_station")}
+                     if binding.get("adapter")
+                     and (binding.get("backhaul_station") or binding.get("backhaul_stations"))}
         self.parents = {role: binding["container"] for role, binding in bindings.items()
                         if binding.get("role_type") == "fronthaul_ap" and not binding.get("adapter")
                         and (binding.get("backhaul") != "wired" or binding.get("wired_guard") == "hal")}
+        self.bindings = bindings
         self.controller, self.timeout = controller, timeout
         self.run, self.sleep, self.clock = run, sleep, clock
         self.bssids = {}
 
     def targets(self, world):
-        """Each pod's parent in the room: the strongest 5 GHz backhaul link at its start."""
-        best = {}
+        """Each pod's parent in the room at its start: a native AP in reach, else a pod.
+
+        A link's strength is the weaker of its two directions, as the native planner
+        takes it. A pod's path is scored as path_quality scores one: its bottleneck,
+        less 3 dB per hop past the first (a native parent's own path is the native
+        planner's). A pod parent's backhaul BSS is on its 2.4 GHz radio, which the
+        child's 2.4 GHz station shares with the child's fronthaul: so only a pod on
+        the child's own 2.4 GHz channel can be its parent.
+        """
+        directed = {}
         for link in world["generations"][0]["links"]:
-            pod, peer = link["source_role"], link["destination_role"]
-            snr = link.get("snr_db_by_band", {}).get("5")
-            if (link.get("link_class") != "backhaul" or pod not in self.pods
-                    or peer not in self.parents or snr is None):
-                continue
-            if pod not in best or snr > best[pod][1]:
-                best[pod] = (peer, snr)
-        return {pod: best[pod][0] for pod in sorted(best)}
+            if link.get("link_class") == "backhaul":
+                for band, value in (link.get("snr_db_by_band") or {}).items():
+                    if value is not None:
+                        directed[(link["source_role"], link["destination_role"], band)] = value
+
+        def strength(child, parent, band):
+            values = [directed.get((child, parent, band)), directed.get((parent, child, band))]
+            return None if None in values else min(values)
+
+        # on a tie, the first role by name, as the rooms have always placed them
+        targets, paths = {}, {}
+        for pod in sorted(self.pods):
+            natives = [(value, peer) for peer in sorted(self.parents)
+                       if (value := strength(pod, peer, "5")) is not None]
+            value, peer = max(natives, key=lambda item: item[0], default=(None, None))
+            if value is not None and value >= USABLE_SNR_DB:
+                targets[pod], paths[pod] = peer, (value, 1)
+        # pods out of every native AP's reach: under the placed pod that gives the best
+        # path, the best path placed first (as Dijkstra's widest path), so a parent pod is
+        # always placed before its children and none lands under its own child
+        while True:
+            options = []
+            for pod in sorted(set(self.pods) - set(targets)):
+                if self._station_of(pod, "2.4") is None:
+                    continue
+                for parent in sorted(set(targets) & set(self.pods)):
+                    value = strength(pod, parent, "2.4")
+                    if (value is None or value < USABLE_SNR_DB
+                            or self._frequency(pod, "2.4") != self._frequency(parent, "2.4")):
+                        continue
+                    bottleneck, hops = min(value, paths[parent][0]), paths[parent][1] + 1
+                    options.append((bottleneck - 3 * (hops - 1), pod, parent, (bottleneck, hops)))
+            if not options:
+                break
+            _, pod, targets[pod], paths[pod] = max(options, key=lambda option: option[0])
+        return {pod: targets[pod] for pod in sorted(targets)}
+
+    def _frequency(self, role, band):
+        return (self.bindings[role].get("fronthaul_frequencies_mhz") or {}).get(band)
+
+    def _station_of(self, pod, band):
+        """The pod's backhaul station on ``band`` ({interface, station_mac, ...}), or None."""
+        binding = self.pods[pod]
+        for station in binding.get("backhaul_stations") or []:
+            if station.get("band") == band:
+                return station
+        legacy = binding.get("backhaul_station")
+        return legacy if legacy and band == "5" else None
+
+    def _stations(self, pod):
+        binding = self.pods[pod]
+        stations = list(binding.get("backhaul_stations") or [])
+        if binding.get("backhaul_station") and not any(
+                s.get("interface") == binding["backhaul_station"].get("interface") for s in stations):
+            stations.append(binding["backhaul_station"])
+        return stations
+
+    def band_of(self, target):
+        """The band a parent's backhaul BSS is on: a pod's on 2.4 GHz, a native AP's on 5."""
+        return "2.4" if target in self.pods else "5"
+
+    def channel(self, target):
+        """The channel of a parent's backhaul BSS: its fronthaul's on that band (the lab's
+        native APs share 5 GHz channel 36)."""
+        frequency = self._frequency(target, self.band_of(target))
+        return channel_of(frequency) if frequency else 36
 
     def bssid(self, role):
-        """A native AP's 5 GHz backhaul BSS."""
+        """A parent's backhaul BSS: a native AP's 5 GHz one, a pod's 2.4 GHz one."""
         if role not in self.bssids:
-            self.bssids[role] = self.run(["lxc", "exec", self.parents[role], "--", "cat",
-                                          "/sys/class/net/wifi1.1/address"]).strip().lower()
+            container = self.bindings[role]["container"]
+            interface = "b-ap-24" if role in self.pods else "wifi1.1"
+            self.bssids[role] = self.run(["lxc", "exec", container, "--", "cat",
+                                          f"/sys/class/net/{interface}/address"]).strip().lower()
         return self.bssids[role]
 
     def parent(self, pod):
-        binding = self.pods[pod]
-        output = self.run(["lxc", "exec", binding["container"], "--", "iw", "dev",
-                           binding["backhaul_station"]["interface"], "link"])
-        match = re.search(r"Connected to ([0-9a-f:]{17})", output, re.I)
-        return match.group(1).lower() if match else None
+        """The BSSID the pod's backhaul is on: whichever of its stations is connected."""
+        container = self.pods[pod]["container"]
+        for station in self._stations(pod):
+            try:
+                output = self.run(["lxc", "exec", container, "--", "iw", "dev", station["interface"], "link"])
+            except RuntimeError:
+                continue  # no such station on this pod's image
+            match = re.search(r"Connected to ([0-9a-f:]{17})", output, re.I)
+            if match:
+                return match.group(1).lower()
+        return None
+
+    def chained(self):
+        """The pods now under another pod, each with that pod."""
+        bssids = {}
+        for pod in self.pods:
+            try:
+                bssids[self.bssid(pod)] = pod
+            except RuntimeError:
+                continue  # no 2.4 GHz backhaul BSS on this pod's image
+        return {pod: bssids[parent] for pod in sorted(self.pods) if (parent := self.parent(pod)) in bssids}
 
     def device(self, pod):
         """The controller's DataElements index of the pod's agent.
 
         The controller keeps the pod's backhaul station as a backhaul-STA row of the
-        agent's device (unified-wifi-mesh 0216): its ID names the agent's AL MAC.
+        agent's device (unified-wifi-mesh 0216, 0248): its ID names the agent's AL MAC.
+        The row is the station's in use, either of the pod's.
         """
-        station = str(self.pods[pod]["backhaul_station"]["station_mac"]).lower()
+        macs = sorted({str(s["station_mac"]).lower() for s in self._stations(pod) if s.get("station_mac")})
+        where = " or ".join(f"ID like '%{mac}%'" for mac in macs)
         rows = self.run(["lxc", "exec", self.controller, "--", "mysql", "-N", "-ubpi", "-proot",
-                         "OneWifiMesh", "-e", f"select ID from BSSList where ID like '%{station}%'"])
+                         "OneWifiMesh", "-e", f"select ID from BSSList where {where}"])
         agents = {row.split("@")[1].lower() for row in rows.split() if row.count("@") >= 2}
         if len(agents) != 1:
-            raise RuntimeError(f"{pod}: the controller has {len(agents)} agents with station {station}")
+            raise RuntimeError(f"{pod}: the controller has {len(agents)} agents with stations {macs}")
         agent = agents.pop()
         count = self._value("Device.WiFi.DataElements.Network.DeviceNumberOfEntries")
         for index in range(1, int(count or 0) + 1):
@@ -382,7 +490,8 @@ class PodBackhaul:
         index = self.device(pod)
         self.run(["lxc", "exec", self.controller, "--", "rbuscli", "method_values",
                   f"Device.WiFi.DataElements.Network.Device.{index}.MultiAPDevice.Backhaul.SteerWiFiBackhaul()",
-                  "TargetBSS", "string", bssid, "Channel", "int32", "36", "TimeOut", "int32", "30"], timeout=20)
+                  "TargetBSS", "string", bssid, "Channel", "int32", str(self.channel(target)),
+                  "TimeOut", "int32", "30"], timeout=20)
         while self.clock() - started < self.timeout:
             if self.parent(pod) == bssid:
                 return {"pod": pod, "parent": target, "bssid": bssid, "moved": True,
@@ -390,10 +499,25 @@ class PodBackhaul:
             self.sleep(2)
         raise RuntimeError(f"{pod} did not move to {target} ({bssid}) within {self.timeout} s")
 
-    def arrange(self, world):
-        """Every pod on its parent in ``world`` (a room that models the backhaul)."""
-        targets = self.targets(world)
+    def arrange(self, world, models_backhaul=True):
+        """Every pod on its parent in ``world``: the pods under native APs first, at once,
+        then each pod under a pod once its parent is placed.
+
+        In a room that models the backhaul, the room's parents (targets). Elsewhere a pod
+        under another pod goes back to the gateway, its configured upstream: such a room
+        does not model the pods' link, and a pod's 5 GHz station keeps the lab's own there
+        (a fixed link to the gateway). A pod under a native AP stays where it is.
+        """
+        targets = self.targets(world) if models_backhaul else {pod: "gateway" for pod in self.chained()}
         if not targets:
             return {"pods": []}
-        with ThreadPoolExecutor(max_workers=len(targets)) as executor:
-            return {"pods": list(executor.map(lambda item: self.move(*item), targets.items()))}
+        moved, placed = [], set()
+        while len(placed) < len(targets):
+            ready = [(pod, parent) for pod, parent in targets.items()
+                     if pod not in placed and (parent not in self.pods or parent in placed)]
+            if not ready:
+                raise RuntimeError(f"pod parents in a loop: {targets}")
+            with ThreadPoolExecutor(max_workers=len(ready)) as executor:
+                moved += list(executor.map(lambda item: self.move(*item), ready))
+            placed |= {pod for pod, _ in ready}
+        return {"pods": moved}
