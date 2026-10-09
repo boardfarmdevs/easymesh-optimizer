@@ -39,7 +39,7 @@ def test_existing_two_ap_crossover_yields_one_report_based_recommendation():
         for item in (*snapshot.clients, *snapshot.candidates)
     } == {"associated_sta_link_metrics", "beacon_metrics_response"}
 
-    engine = ThresholdPolicy(PolicyConfig())
+    engine = ThresholdPolicy(PolicyConfig(expected_devices=5))
     state = PolicyState()
     decisions = []
     for snapshot in snapshots:
@@ -121,7 +121,7 @@ def test_five_ap_measured_stream_recommends_only_the_unique_target():
         measured(30, 84, (136, 82, 78, 74)),
         measured(36, 84, (136, 82, 78, 74)),
     )
-    policy = ThresholdPolicy(PolicyConfig())
+    policy = ThresholdPolicy(PolicyConfig(expected_devices=5))
     state = PolicyState()
     decisions = []
     for observed in observations:

@@ -42,6 +42,16 @@ def fetch(url):
         return json.load(response)
 
 
+def room_devices():
+    """The controller's devices as the lab's room counts them (its inventory: the lab's
+    agents, wired extenders and adapter nodes); policies name no count of their own."""
+    devices = (fetch('http://127.0.0.1:8891/api/demo/current').get('health') or {}).get('expected_controller_devices')
+    if not isinstance(devices, int) or devices < 1:
+        raise RuntimeError('the room publishes no device count (health.expected_controller_devices): '
+                           'a room service from before it')
+    return devices
+
+
 def require_ok(*arguments):
     result = command(*arguments).strip()
     if result != 'OK':
@@ -545,6 +555,8 @@ def main():
     if args.counter_case != 'clear' and (not configuration.load_counter_guard_enabled or args.same_channel_negative):
         parser.error('pressure/rescue require a counter-guard policy and a different-channel target')
     state_room = fetch('http://127.0.0.1:8891/api/demo/interactions')
+    # the lab's mesh, as its room counts it (policies name no count of their own)
+    configuration = replace(configuration, expected_devices=room_devices())
     if (state_room['lease']['held'] or state_room['recording']['active']
             or state_room['playback']['status'] != 'paused' or state_room['playback']['time_ms'] != 0
             or state_room['playback']['manual_roles']

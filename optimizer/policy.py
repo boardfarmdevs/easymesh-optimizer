@@ -27,7 +27,10 @@ class PolicyConfig:
     band_upgrade_enabled: bool = False
     minimum_band_upgrade_target_rcpi: int = 120
     maximum_band_upgrade_loss_rcpi: int = 8
-    expected_devices: int = 5
+    # the mesh's devices: the lab's own count, which its caller supplies (the room from the
+    # lab's inventory, the live CLI --expected-devices, the simulator its world); none
+    # supplied, the policy acts on nothing (mesh_device_count_unknown)
+    expected_devices: int | None = None
     expected_clients: int = 10
     require_complete_client_roster: bool = True
     load_aware_enabled: bool = False
@@ -62,8 +65,11 @@ class PolicyConfig:
                 raise ValueError(f"{name} must be a utilization octet")
         if not 0 <= self.load_minimum_target_rcpi <= 220 or not 0 <= self.load_maximum_signal_loss_rcpi <= 220:
             raise ValueError("invalid load policy RF margin")
+        if self.expected_devices is not None and (type(self.expected_devices) is not int
+                                                  or self.expected_devices < 1):
+            raise ValueError("expected_devices must be a positive integer (the lab's), or unset")
         for name, value in asdict(self).items():
-            if name == "policy_version":
+            if name == "policy_version" or (name == "expected_devices" and value is None):
                 continue
             if value < 0:
                 raise ValueError(f"{name} cannot be negative")
@@ -177,7 +183,9 @@ class ThresholdPolicy:
         now = parse_time(snapshot.observed_at)
 
         health_reason = None
-        if snapshot.health.devices != self.config.expected_devices:
+        if self.config.expected_devices is None:
+            health_reason = "mesh_device_count_unknown"
+        elif snapshot.health.devices != self.config.expected_devices:
             health_reason = "mesh_device_count_mismatch"
         elif self.config.require_complete_client_roster and snapshot.health.clients != self.config.expected_clients:
             health_reason = "client_count_mismatch"

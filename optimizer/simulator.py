@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 import hashlib
 import json
@@ -147,6 +147,9 @@ class WorldSimulator:
         if invalid:
             raise ExperimentError(f"unsupported client behaviors: {invalid}")
         self.agents, self.clients = _identity(world)
+        # the simulated mesh is its world's agents, unless the policy names a fixed count
+        if self.policy.config.expected_devices is None:
+            self.policy.config = replace(self.policy.config, expected_devices=len(self.agents))
         self.associations: dict[str, _Association] = {}
         self.state = PolicyState()
 

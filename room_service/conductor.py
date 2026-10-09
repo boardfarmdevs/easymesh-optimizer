@@ -1108,6 +1108,10 @@ class LiveConductor:
                 payload["pool_clients"] = int(health["expected_clients"])
                 payload["expected_online_clients"] = expected_clients
                 payload.setdefault("expected_mesh_devices", expected_devices)
+                # every device in the controller's model, as the room's optimizer expects them:
+                # the lab's agents (its wired extenders included) and the adapter's nodes, from
+                # the lab's inventory (tools that run a policy in the lab take this count)
+                payload["expected_controller_devices"] = expected_devices + len(adapters)
                 # mesh_health's expectations: adapter-managed nodes (OpenSync pods)
                 # carry their own radio and BSS counts, and a backhaul station
                 # only while on a Wi-Fi backhaul. RDK's reports the nodes it expects
@@ -1239,6 +1243,9 @@ class LiveConductor:
         # extender; prplMesh's wired room manifest counts its wired Agent itself.
         pods = len(_adapter_devices(self.plan)) + _wired_devices(self.plan)
         expected_mesh = (self.manifest.get("health") or {}).get("expected_mesh_devices")
+        if expected_mesh is None and policy_config.expected_devices is None:
+            raise RuntimeError("the room's mesh: neither its manifest (health.expected_mesh_devices) "
+                               "nor its policy names it")
         mesh = int(expected_mesh) if expected_mesh is not None else policy_config.expected_devices
         if mesh + pods != policy_config.expected_devices:
             policy_config = replace(policy_config, expected_devices=mesh + pods)

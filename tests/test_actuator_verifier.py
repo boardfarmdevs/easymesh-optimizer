@@ -11,7 +11,7 @@ from .helpers import STA, TARGET, snapshot
 
 
 def actionable():
-    engine = ThresholdPolicy(PolicyConfig(condition_hold_seconds=0))
+    engine = ThresholdPolicy(PolicyConfig(expected_devices=5, condition_hold_seconds=0))
     result = engine.evaluate(snapshot(0))
     return result.decisions[0]
 

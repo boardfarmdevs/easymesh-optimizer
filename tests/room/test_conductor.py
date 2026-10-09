@@ -66,7 +66,7 @@ class ConductorProjectionTests(unittest.TestCase):
             "action_window_ms": [0, 1000], "max_actions": 1,
         }})
         receiver = Mock()
-        with patch("room_service.conductor.load_policy", return_value=PolicyConfig(load_aware_enabled=True)), \
+        with patch("room_service.conductor.load_policy", return_value=PolicyConfig(expected_devices=5, load_aware_enabled=True)), \
              patch("room_service.conductor._simulated_bss_channels", return_value={}), \
              patch("room_service.conductor.NativeLoadProvider", return_value=receiver), \
              patch("room_service.conductor.ControllerCandidateProvider"), \
@@ -118,6 +118,26 @@ class ConductorProjectionTests(unittest.TestCase):
                     conductor._health_worker()
                     self.assertEqual(store.current()["latest"]["health.sample"]["payload"]["healthy"], healthy)
 
+    def test_health_publishes_the_controllers_devices_from_the_labs_inventory(self):
+        # 5 (the Wi-Fi nodes), 6 (and a wired extender), 8 (and two OpenSync pods): the
+        # count tools that run a policy in the lab take (no policy names one)
+        pod = {"radios": 1, "bsses": 5}
+        for expected_lab, devices in [({}, 5), ({"wired_devices": 1}, 6),
+                                      ({"wired_devices": 1, "adapter_devices": [
+                                          {"container": "pod-1", **pod}, {"container": "pod-2", **pod}]}, 8)]:
+            conductor, store = self._conductor()
+            conductor.manifest["health"] = {"interval_seconds": 1, "expected_mesh_devices": 5,
+                                          "expected_clients": 100}
+            conductor.room_state = lambda: {"expected_online_clients": 10}
+            conductor.plan = {"expected_lab": {"mesh_devices": 5, "clients": 100, **expected_lab}}
+            with self.subTest(devices=devices), patch.object(conductor, "_wait_for_run", return_value=True), \
+                    patch.object(conductor, "_active", return_value=True), \
+                    patch.object(conductor, "_sleep", return_value=True), \
+                    patch("room_service.conductor.mesh_health", return_value={"api_active": 10}):
+                conductor._health_worker()
+                payload = store.current()["latest"]["health.sample"]["payload"]
+                self.assertEqual(payload["expected_controller_devices"], devices)
+
     def _run_profiling_queue(self, futures, advance, clock=None):
         conductor, store = self._conductor()
         conductor.action_attempts = 100
@@ -151,7 +171,7 @@ class ConductorProjectionTests(unittest.TestCase):
                 "expected_online_clients": len(clients),
                 "roles": {conductor._role_by_mac[client.sta_mac]: {"present": True} for client in clients}}
         conductor.room_state = lambda: room
-        policy = ThresholdPolicy(_interactive_policy(PolicyConfig(expected_clients=9)))
+        policy = ThresholdPolicy(_interactive_policy(PolicyConfig(expected_devices=5, expected_clients=9)))
         provider = Mock(last_raw=[], last_selected_sta_macs={client.sta_mac for client in clients},
                         last_requested_sta_macs=set(), last_selection={}, last_unavailable=None)
         observer = Mock()
@@ -218,7 +238,7 @@ class ConductorProjectionTests(unittest.TestCase):
 
     def test_cooldown_and_failure_backoff_start_at_actual_verification(self):
         now = datetime.now(timezone.utc)
-        config = _interactive_policy(PolicyConfig())
+        config = _interactive_policy(PolicyConfig(expected_devices=5))
         decision = Decision(sta_mac="02:00:00:00:03:00", action="steer", reason="ready",
                             source_bssid="02:00:00:00:01:01", target_bssid="02:00:00:00:02:01")
         for success in (True, False):
@@ -228,7 +248,7 @@ class ConductorProjectionTests(unittest.TestCase):
             self.assertEqual(result.cooldown_until if success else result.backoff_until, (now + timedelta(seconds=5)).isoformat())
 
     def test_fast_policy_removes_pre_action_timers_but_keeps_hysteresis_and_bounds(self):
-        original = PolicyConfig()
+        original = PolicyConfig(expected_devices=5)
         fast = _interactive_policy(original)
         self.assertEqual((fast.condition_hold_seconds, fast.minimum_dwell_seconds), (0, 0))
         self.assertEqual(fast.minimum_target_gain_rcpi, 4)
@@ -369,7 +389,7 @@ class ConductorProjectionTests(unittest.TestCase):
                 decisions = tuple(Decision(sta_mac=client.sta_mac, action="steer", reason="ready",
                                           source_bssid=client.connected_bssid, target_bssid=candidates[0].bssid,
                                           current_rcpi=70, target_rcpi=100) for client in clients)
-                policy = Mock(config=PolicyConfig())
+                policy = Mock(config=PolicyConfig(expected_devices=5))
                 policy.evaluate.return_value = Evaluation("hash", decisions, PolicyState())
                 provider = Mock(last_raw=[], last_selected_sta_macs={client.sta_mac for client in clients}, last_selection={})
                 observer = Mock()
@@ -381,7 +401,7 @@ class ConductorProjectionTests(unittest.TestCase):
                 verifier.verify.return_value.success = not failed_verification
                 verifier.verify.return_value.reason = "association_timeout" if failed_verification else "association_and_traffic_converged"
                 verifier.verify.return_value.to_dict.return_value = {"success": not failed_verification}
-                with patch("room_service.conductor.load_policy", return_value=PolicyConfig()), \
+                with patch("room_service.conductor.load_policy", return_value=PolicyConfig(expected_devices=5)), \
                      patch("room_service.conductor._simulated_bss_channels", return_value={}), \
                      patch("room_service.conductor.ThresholdPolicy", return_value=policy), \
                      patch("room_service.conductor.ControllerCandidateProvider", return_value=provider), \
@@ -589,14 +609,14 @@ class ConductorProjectionTests(unittest.TestCase):
         )
         observer = Mock()
         observer.observe.side_effect = [snapshot if item is None else item for item in observations]
-        policy = Mock(config=PolicyConfig())
+        policy = Mock(config=PolicyConfig(expected_devices=5))
         policy.evaluate.return_value = Evaluation("hash", (Decision(
             sta_mac=conductor.hero_mac, action="none", reason="test_observed",
             source_bssid="02:00:00:00:01:01",
         ),), evaluation_state or PolicyState())
         provider = Mock(last_raw=[{"request": {}, "error": "HTTP 504"}], last_selected_sta_macs=set(), last_selection={})
         actuator = Mock()
-        with patch("room_service.conductor.load_policy", return_value=PolicyConfig()), \
+        with patch("room_service.conductor.load_policy", return_value=PolicyConfig(expected_devices=5)), \
              patch("room_service.conductor._simulated_bss_channels", return_value={}), \
              patch("room_service.conductor.ThresholdPolicy", return_value=policy), \
              patch("room_service.conductor.ControllerCandidateProvider", return_value=provider) as candidate_factory, \
@@ -988,7 +1008,7 @@ class ConductorProjectionTests(unittest.TestCase):
                             source_bssid=clients[0].connected_bssid, current_rcpi=80)
         immature = replace(snapshot, clients=(replace(clients[0], association_uptime_seconds=0),))
         evaluation = Evaluation("test", (decision,), PolicyState())
-        rows = _client_optimizer_status(immature, evaluation, PolicyConfig(), set())
+        rows = _client_optimizer_status(immature, evaluation, PolicyConfig(expected_devices=5), set())
         self.assertEqual(rows[0]["wait_remaining_seconds"], 20)
         self.assertEqual(rows[0]["association_uptime_seconds"], 0)
         self.assertFalse(rows[0]["candidate_query_selected"])

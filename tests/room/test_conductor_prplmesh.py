@@ -54,7 +54,7 @@ class ConductorProjectionTests(unittest.TestCase):
             "action_window_ms": [0, 1000], "max_actions": 1,
         }})
         receiver = Mock()
-        with patch("room_service.conductor.load_policy", return_value=PolicyConfig(load_aware_enabled=True)), \
+        with patch("room_service.conductor.load_policy", return_value=PolicyConfig(expected_devices=5, load_aware_enabled=True)), \
              patch("room_service.conductor.NativeLoadProvider", return_value=receiver), \
              patch("room_service.conductor.PrplMeshCandidateProvider"), \
              patch("room_service.conductor.PrplMeshObserver", side_effect=RuntimeError("observer constructed")) as observer, \
@@ -130,7 +130,7 @@ class ConductorProjectionTests(unittest.TestCase):
                 "expected_online_clients": len(clients),
                 "roles": {conductor._role_by_mac[client.sta_mac]: {"present": True} for client in clients}}
         conductor.room_state = lambda: room
-        policy = ThresholdPolicy(_interactive_policy(PolicyConfig(expected_clients=9)))
+        policy = ThresholdPolicy(_interactive_policy(PolicyConfig(expected_devices=5, expected_clients=9)))
         provider = Mock(last_raw=[], last_selected_sta_macs={client.sta_mac for client in clients},
                         last_requested_sta_macs=set(), last_selection={}, last_unavailable=None)
         observer = Mock()

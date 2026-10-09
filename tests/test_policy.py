@@ -14,12 +14,28 @@ def policy(**changes):
         "minimum_dwell_seconds": 20,
         "reject_stale_metrics_after_seconds": 7,
     }
-    values.update(changes)
+    values = {"expected_devices": 5, **values, **changes}
     return ThresholdPolicy(PolicyConfig(**values))
 
 
 def decision(result):
     return result.decisions[0]
+
+
+def test_the_mesh_size_is_the_labs_and_none_given_the_policy_acts_on_nothing():
+    unset = ThresholdPolicy(PolicyConfig(expected_clients=10))
+    assert decision(unset.evaluate(snapshot(0))).reason == "mesh_device_count_unknown"
+    # 5 (the Wi-Fi nodes), 6 (and a wired extender), 8 (and two OpenSync pods)
+    for devices in (5, 6, 8):
+        sized = policy(expected_devices=devices)
+        assert decision(sized.evaluate(snapshot(0, devices=devices))).reason != "mesh_device_count_mismatch"
+        assert decision(sized.evaluate(snapshot(0, devices=devices - 1))).reason == "mesh_device_count_mismatch"
+    for invalid in (0, -1, 5.0, True):
+        try:
+            PolicyConfig(expected_devices=invalid)
+        except ValueError:
+            continue
+        raise AssertionError(f"expected_devices={invalid!r} accepted")
 
 
 def test_partial_client_roster_is_opt_in_and_keeps_per_client_safety_gates():

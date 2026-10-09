@@ -31,7 +31,7 @@ def test_small_band_walk_yields_one_bssid_recommendation(source_band, target_ban
         snapshot(5, current_rcpi=130, target_rcpi=126,
                  current_band=source_band, target_band=target_band),
     ]
-    engine = ThresholdPolicy(PolicyConfig(band_upgrade_enabled=True))
+    engine = ThresholdPolicy(PolicyConfig(expected_devices=5, band_upgrade_enabled=True))
     state = PolicyState()
     decisions = []
     for observed in observations:

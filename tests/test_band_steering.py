@@ -30,7 +30,7 @@ def sample(seconds=0, **kwargs):
 
 @pytest.mark.parametrize("current,target", [("2.4", "5"), ("5", "6")])
 def test_upgrade_prefers_safe_higher_band_without_requiring_rssi_gain(current, target):
-    policy = band_policy(PolicyConfig())
+    policy = band_policy(PolicyConfig(expected_devices=5))
     first = policy.evaluate(sample(current_band=current, target_band=target, current_rcpi=140, target_rcpi=132))
     assert first.decisions[0].reason == "condition_hold_not_met"
     final = policy.evaluate(sample(1, current_band=current, target_band=target, current_rcpi=140, target_rcpi=132), first.state)
@@ -39,7 +39,7 @@ def test_upgrade_prefers_safe_higher_band_without_requiring_rssi_gain(current, t
 
 
 def test_edge_fallback_and_band_preference_hysteresis():
-    policy = band_policy(PolicyConfig())
+    policy = band_policy(PolicyConfig(expected_devices=5))
     first = policy.evaluate(sample(current_band="5", target_band="2.4", current_rcpi=94, target_rcpi=106))
     result = policy.evaluate(sample(1, current_band="5", target_band="2.4", current_rcpi=94, target_rcpi=106), first.state)
     assert result.decisions[0].action == "steer" and result.decisions[0].target_band == "2.4"
@@ -48,7 +48,7 @@ def test_edge_fallback_and_band_preference_hysteresis():
 
 
 def test_band_hold_requires_another_fresh_scan_and_matching_measurement_direction():
-    policy = band_policy(PolicyConfig())
+    policy = band_policy(PolicyConfig(expected_devices=5))
     first = policy.evaluate(sample(current_band="2.4", target_band="5", current_rcpi=140, target_rcpi=132))
     reused = sample(1, current_band="2.4", target_band="5", current_rcpi=140, target_rcpi=132, metric_age=1, target_age=1)
     assert policy.evaluate(reused, first.state).decisions[0].reason == "band_waiting_for_new_scan"
@@ -59,12 +59,12 @@ def test_band_hold_requires_another_fresh_scan_and_matching_measurement_directio
 
 @pytest.mark.parametrize("target_rcpi", [119, 123])
 def test_weak_upgrade_or_excessive_loss_is_not_steered(target_rcpi):
-    result = band_policy(PolicyConfig()).evaluate(sample(current_band="2.4", target_band="5", current_rcpi=140, target_rcpi=target_rcpi))
+    result = band_policy(PolicyConfig(expected_devices=5)).evaluate(sample(current_band="2.4", target_band="5", current_rcpi=140, target_rcpi=target_rcpi))
     assert result.decisions[0].reason == "no_safe_band_upgrade"
 
 
 def test_existing_rooms_use_identical_policy_and_band_profile_does_not_modify_others():
-    policy = ThresholdPolicy(PolicyConfig(current_rcpi_below=220, condition_hold_seconds=0, minimum_dwell_seconds=0))
+    policy = ThresholdPolicy(PolicyConfig(expected_devices=5, current_rcpi_below=220, condition_hold_seconds=0, minimum_dwell_seconds=0))
     value = sample(current_band="2.4", target_band="5", current_rcpi=140, target_rcpi=132)
     assert evaluate_band_clients(policy, value, None, set()) == policy.evaluate(value)
     assert evaluate_band_clients(policy, value, None, {STA}).decisions[0].reason == "condition_hold_not_met"
@@ -169,7 +169,7 @@ def test_received_same_band_opt_in_does_not_enable_band_preference_or_matrix_fal
     assert received_scan_enabled(settings)
     assert not received_scan_enabled({**settings, "profile": {"allowed_bands": ["5"], "initial_band": "5"}})
     assert not received_scan_enabled({})
-    policy = ThresholdPolicy(PolicyConfig())
+    policy = ThresholdPolicy(PolicyConfig(expected_devices=5))
     first = evaluate_band_clients(policy, sample(current_rcpi=80, target_rcpi=132, target_band="5"),
                                   None, {STA}, {STA: settings})
     final = evaluate_band_clients(policy, sample(1, current_rcpi=80, target_rcpi=132, target_band="5"),
@@ -180,7 +180,7 @@ def test_received_same_band_opt_in_does_not_enable_band_preference_or_matrix_fal
 
 
 def test_received_same_band_hold_requires_new_received_samples():
-    policy = band_policy(PolicyConfig(), same_band=True)
+    policy = band_policy(PolicyConfig(expected_devices=5), same_band=True)
     first = policy.evaluate(sample(current_rcpi=80, target_rcpi=132, target_band="5"))
     cached = sample(1, current_rcpi=80, target_rcpi=132, target_band="5", metric_age=1, target_age=1)
     assert policy.evaluate(cached, first.state).decisions[0].reason == "band_waiting_for_new_scan"

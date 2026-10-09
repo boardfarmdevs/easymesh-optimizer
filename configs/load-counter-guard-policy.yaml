@@ -7,7 +7,8 @@ condition_hold_seconds: 5
 minimum_dwell_seconds: 20
 steer_timeout_seconds: 40
 post_steer_cooldown_seconds: 15
-expected_devices: 5
+# expected_devices: the lab's, not the policy's (the room counts its inventory; the live
+# CLI takes --expected-devices)
 expected_clients: 20
 load_high_utilization: 192
 load_maximum_target_utilization: 128

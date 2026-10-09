@@ -34,7 +34,7 @@ def decision(value, **changes):
 
 
 def test_default_is_exact_signal_policy_and_schema_one_stays_compatible():
-    assert type(policy_for(PolicyConfig())) is ThresholdPolicy
+    assert type(policy_for(PolicyConfig(expected_devices=5))) is ThresholdPolicy
     value = snapshot(0)
     assert "bss_loads" not in value.to_dict()
     assert Snapshot.from_dict(value.to_dict()) == value
@@ -81,9 +81,9 @@ def test_cli_load_receiver_is_opt_in_owned_and_closed_on_failure(monkeypatch, ba
         def close(self):
             calls.append("closed")
 
-    args = SimpleNamespace(policy="unused", backend=backend, candidate_provider="controller")
+    args = SimpleNamespace(policy="unused", backend=backend, candidate_provider="controller", expected_devices=5)
     monkeypatch.setattr(cli, "NativeLoadProvider", Receiver)
-    monkeypatch.setattr(cli, "load_policy", lambda _path: PolicyConfig(load_aware_enabled=True))
+    monkeypatch.setattr(cli, "load_policy", lambda _path: PolicyConfig(expected_devices=5, load_aware_enabled=True))
     monkeypatch.setattr(cli, "_live_run", lambda *_args: (_value for _value in ()).throw(OSError("test")))
     with pytest.raises(OSError, match="test"):
         cli._live(args, "recommend")
@@ -93,7 +93,7 @@ def test_cli_load_receiver_is_opt_in_owned_and_closed_on_failure(monkeypatch, ba
     with pytest.raises(SystemExit, match="candidate-provider"):
         cli._live(args, "recommend")
     assert calls == []
-    monkeypatch.setattr(cli, "load_policy", lambda _path: PolicyConfig())
+    monkeypatch.setattr(cli, "load_policy", lambda _path: PolicyConfig(expected_devices=5))
     monkeypatch.setattr(cli, "_live_run", lambda *_args: 0)
     assert cli._live(args, "recommend") == 0
     assert calls == []
@@ -176,7 +176,7 @@ def test_only_one_active_client_balances_and_settling_is_global():
 @pytest.mark.parametrize("number", [math.nan, math.inf, -1])
 def test_invalid_load_config_and_activity_rejected(number):
     with pytest.raises(ValueError):
-        PolicyConfig(load_condition_hold_seconds=number)
+        PolicyConfig(expected_devices=5, load_condition_hold_seconds=number)
     with pytest.raises(ValueError):
         replace(loaded().client_activity[0], packets_per_second=number)
 

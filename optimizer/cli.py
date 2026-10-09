@@ -68,18 +68,29 @@ def _positive_float(value: str) -> float:
     return parsed
 
 
-def _live_policy(path: str, expected_clients: int | None,
-                 expected_devices: int | None = None) -> ThresholdPolicy:
+def _policy_config(path: str, expected_devices: int | None = None,
+                   expected_clients: int | None = None):
+    """A policy with the mesh's device count: the lab's (--expected-devices), else a
+    fixed count the policy file names; neither, the command refuses (the policy would
+    act on nothing)."""
     config = load_policy(path)
     if expected_clients is not None:
         config = replace(config, expected_clients=expected_clients)
     if expected_devices is not None:
         config = replace(config, expected_devices=expected_devices)
-    return policy_for(config)
+    if config.expected_devices is None:
+        raise SystemExit(f"em-optimizer: the mesh's device count: --expected-devices (the lab's; "
+                         f"{path} names none)")
+    return config
+
+
+def _live_policy(path: str, expected_clients: int | None,
+                 expected_devices: int | None = None) -> ThresholdPolicy:
+    return policy_for(_policy_config(path, expected_devices, expected_clients))
 
 
 def _live(args, mode: str) -> int:
-    config = load_policy(args.policy) if mode != "observe" else None
+    config = _policy_config(args.policy, args.expected_devices) if mode != "observe" else None
     provider = None
     try:
         if config is not None and config.load_aware_enabled:
@@ -210,7 +221,7 @@ def _live_run(args, mode: str, load_provider=None) -> int:
 
 
 def _replay(args) -> int:
-    policy = policy_for(load_policy(args.policy))
+    policy = policy_for(_policy_config(args.policy, args.expected_devices))
     journal = Journal(args.journal)
     state = PolicyState()
     count = 0
@@ -237,7 +248,7 @@ def _evaluate(args) -> int:
             if args.state_in
             else PolicyState()
         )
-        evaluation = policy_for(load_policy(args.policy)).evaluate(snapshot, state)
+        evaluation = policy_for(_policy_config(args.policy, args.expected_devices)).evaluate(snapshot, state)
     except (KeyError, TypeError, ValueError) as error:
         raise SystemExit(f"em-optimizer: invalid snapshot input: {error}") from error
 
@@ -333,8 +344,9 @@ def parser() -> argparse.ArgumentParser:
                 type=_positive_int,
                 default=None,
                 help=(
-                    "override the policy's expected mesh device count (the labs' default "
-                    "builds have six: the gateway, four Wi-Fi APs and a wired one)"
+                    "the mesh's device count, the lab's (required unless the policy names "
+                    "a fixed one): the labs' default builds have six, the gateway, four Wi-Fi "
+                    "APs and a wired one, and two more with the OpenSync pods"
                 ),
             )
         if mode == "act":
@@ -354,6 +366,8 @@ def parser() -> argparse.ArgumentParser:
     replay.add_argument("--input", required=True)
     replay.add_argument("--journal", required=True)
     replay.add_argument("--policy", required=True)
+    replay.add_argument("--expected-devices", type=_positive_int, default=None,
+                        help="the mesh's device count (required unless the policy names one)")
     evaluate = sub.add_parser(
         "evaluate",
         help="evaluate one normalized snapshot supplied as plain JSON",
@@ -361,6 +375,8 @@ def parser() -> argparse.ArgumentParser:
     evaluate.add_argument("--input", required=True)
     evaluate.add_argument("--output", required=True)
     evaluate.add_argument("--policy", required=True)
+    evaluate.add_argument("--expected-devices", type=_positive_int, default=None,
+                        help="the mesh's device count (required unless the policy names one)")
     evaluate.add_argument("--state-in")
     evaluate.add_argument("--state-out")
     matrix = sub.add_parser("matrix")

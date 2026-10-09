@@ -16,5 +16,6 @@ reject_stale_metrics_after_seconds: 60
 band_upgrade_enabled: false
 minimum_band_upgrade_target_rcpi: 120
 maximum_band_upgrade_loss_rcpi: 8
-expected_devices: 5
+# expected_devices: the lab's, not the policy's (the room counts its inventory; the live
+# CLI takes --expected-devices)
 expected_clients: 20

@@ -31,7 +31,7 @@ def evidence():
 
 
 def evaluate(report):
-    return shadow_counter_trials(report, PolicyConfig(load_aware_enabled=True, load_counter_guard_enabled=True))
+    return shadow_counter_trials(report, PolicyConfig(expected_devices=5, load_aware_enabled=True, load_counter_guard_enabled=True))
 
 
 def test_real_report_shape_checks_clear_pressure_recovery_without_inventing_targets():
@@ -83,4 +83,4 @@ def test_no_native_pressure_is_not_a_qualification_and_disabled_policy_is_reject
         row["traffic"][0].update(retransmissions=0, tx_packet_errors=0)
     assert not evaluate(report)["passed"]
     with pytest.raises(ValueError, match="explicit counter guard"):
-        shadow_counter_trials(report, PolicyConfig())
+        shadow_counter_trials(report, PolicyConfig(expected_devices=5))

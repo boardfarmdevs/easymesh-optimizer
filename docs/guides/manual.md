@@ -287,6 +287,7 @@ Common no-action reasons are:
 
 | Reason | Meaning |
 | --- | --- |
+| `mesh_device_count_unknown` | No mesh size was given (the lab supplies it); do not act |
 | `mesh_device_count_mismatch` | The model is incomplete; do not act |
 | `client_count_mismatch` | Expected client inventory is incomplete |
 | `current_metric_missing` | No current RCPI was reported |
@@ -326,7 +327,7 @@ time, and commit it beside the test evidence.
 | `band_upgrade_enabled` | Enables the separate higher-band rule |
 | `minimum_band_upgrade_target_rcpi` | Minimum higher-band target quality |
 | `maximum_band_upgrade_loss_rcpi` | Permitted RCPI loss for an upgrade |
-| `expected_devices` | Required non-controller mesh-device count |
+| `expected_devices` | The mesh's device count, the lab's: the room counts its inventory (its agents, wired extenders and adapter nodes), the live, replay and evaluate commands take `--expected-devices`, the simulator its world's agents. The shipped policies name none; a policy for a fixed lab may |
 | `expected_clients` | Required active-client count |
 
 These are external algorithm parameters, not EasyMesh Policy Configuration TLV

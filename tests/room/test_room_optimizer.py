@@ -57,7 +57,7 @@ class RoomOptimizerTests(unittest.TestCase):
                 replace(client, sta_mac="02:00:ff:00:" + client.sta_mac[-5:])
                 if ordinal >= expected_counts[index] else client
                 for ordinal, client in enumerate(sample.clients))) for index, sample in enumerate(snapshots)]
-        policy_config = PolicyConfig(expected_clients=20, condition_hold_seconds=0)
+        policy_config = PolicyConfig(expected_devices=5, expected_clients=20, condition_hold_seconds=0)
         policy = ThresholdPolicy(replace(policy_config, current_rcpi_below=220,
                                          minimum_target_gain_rcpi=1))
         with tempfile.TemporaryDirectory() as directory:

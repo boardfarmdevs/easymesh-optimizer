@@ -33,6 +33,14 @@ def policy(**changes):
     return ThresholdPolicy(PolicyConfig(**values))
 
 
+def test_a_policy_without_a_mesh_size_takes_its_worlds_agents():
+    simulator = WorldSimulator(world(), policy(expected_devices=None))
+    assert simulator.policy.config.expected_devices == len(simulator.agents)
+    assert simulator.run()["summary"]["cycles"] == 30
+    # a policy that names a count keeps it
+    assert WorldSimulator(world(), policy(expected_devices=7)).policy.config.expected_devices == 7
+
+
 def test_simulation_is_deterministic_and_keeps_truth_explicitly_synthetic():
     first = WorldSimulator(world(), policy()).run()
     second = WorldSimulator(world(), policy()).run()

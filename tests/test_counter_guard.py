@@ -24,9 +24,9 @@ def guarded(**changes):
 
 
 def test_guard_is_explicit_and_signal_policy_does_not_consume_counters():
-    assert type(policy_for(PolicyConfig())) is ThresholdPolicy
+    assert type(policy_for(PolicyConfig(expected_devices=5))) is ThresholdPolicy
     sample = counters(retries_per_second=10000)
-    assert ThresholdPolicy(PolicyConfig()).evaluate(sample).decisions[0].reason == "current_link_acceptable"
+    assert ThresholdPolicy(PolicyConfig(expected_devices=5)).evaluate(sample).decisions[0].reason == "current_link_acceptable"
     assert policy(load_condition_hold_seconds=0).evaluate(sample).decisions[0].action == "steer"
     config = load_policy(Path(__file__).parents[1] / "configs/load-counter-guard-policy.yaml")
     assert config.load_counter_guard_enabled and config.load_aware_enabled
@@ -35,7 +35,7 @@ def test_guard_is_explicit_and_signal_policy_does_not_consume_counters():
                     {"load_maximum_retries_per_second": float("nan")},
                     {"load_maximum_rx_errors_per_second": -1}):
         with pytest.raises(ValueError):
-            PolicyConfig(**changes)
+            PolicyConfig(expected_devices=5, **changes)
 
 
 @pytest.mark.parametrize("name,limit", [("retries_per_second", 100), ("tx_errors_per_second", 10),

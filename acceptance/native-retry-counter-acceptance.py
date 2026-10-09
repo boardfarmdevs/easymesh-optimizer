@@ -253,7 +253,12 @@ def main():
     shadow_config = None
     if args.shadow_counter_policy:
         from optimizer.config import load_policy
-        shadow_config = load_policy(args.shadow_counter_policy)
+        # the controller's devices as the lab's room counts them (policies name none)
+        devices = room_health_sample(5).get("expected_controller_devices")
+        require(isinstance(devices, int) and devices > 0,
+                "the room publishes no device count (health.expected_controller_devices)")
+        from dataclasses import replace
+        shadow_config = replace(load_policy(args.shadow_counter_policy), expected_devices=devices)
         require(shadow_config.load_counter_guard_enabled, "shadow policy must explicitly enable the counter guard")
     from optimizer.load_observer import NativeLoadProvider
     from wmdcfg.actuator import ControlClient
