@@ -61,12 +61,33 @@ def _address(value: str) -> tuple[str, int]:
     return host, port
 
 
+# A node mid-restart has a radio with no operating frequency yet: an RDK extender short of its
+# three bands, a pod with no AP up. The service waits for its radios, bounded, instead of
+# exiting into systemd's start limit (rdk-1004, 9 October: ten exits in a lab start, then the
+# unit failed and the bring-up with it).
+INVENTORY_SETTLE_SECONDS = 180
+INVENTORY_TRANSIENT = ("no operating AP radio", "expected tri-band radio inventory")
+
+
+def _discover_settled(timeout: float = INVENTORY_SETTLE_SECONDS, interval: float = 5.0):
+    """The lab's inventory once its nodes' radios are up; any other inventory error at once."""
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            return discover()
+        except ScenarioError as error:
+            if not any(text in str(error) for text in INVENTORY_TRANSIENT) or time.monotonic() >= deadline:
+                raise
+            print(f"room-service: waiting for the lab's radios: {error}", file=sys.stderr, flush=True)
+            time.sleep(interval)
+
+
 def _prepare(world_path: Path, binding_path: Path, *, pool: bool = False):
     world = load_json(world_path)
     verify_world_plan(world)
     source = export_wmd(world, "all")
     scenario = parse(source)
-    inventory = discover()
+    inventory = _discover_settled()
     binding_doc = json.loads(binding_path.read_text(encoding="utf-8"))
     bindings = binding_doc.get("roles")
     if not isinstance(bindings, dict):
