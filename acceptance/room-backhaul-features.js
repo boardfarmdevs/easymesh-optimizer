@@ -44,6 +44,16 @@ const initialConvergenceMs = () =>
 const HOLD_AFTER_START_PARENTS_MS = 90000;
 const HOLD_MAX_MS = 150000;
 const MESH_LOSS_SAMPLES = 3;
+// backhaul-pod-chain: a backhaul move drops the moved pod's link to its agent (OpenSync's CM
+// opens it again 15 to 18 s later, on the bench too), the agent's session starts anew, and until
+// the controller has the pod's topology again its model lacks some of the pod's BSSes. On
+// rdk-1010 (13 October) the room was ready between the move's response and that onboarding, and
+// the hold sampled the onboarding (69 of 72 BSSes). So the hold starts once every pod's link is
+// back since its station's association, or outlived it by POD_LINK_GRACE_S, and the chained room
+// has stayed ready for POD_SETTLE_MS, at most POD_SETTLE_MAX_MS after the chain was verified.
+const POD_LINK_GRACE_S = 60;
+const POD_SETTLE_MS = 30000;
+const POD_SETTLE_MAX_MS = 180000;
 
 function usage() {
   return 'usage: room-backhaul-features.js --yes-act true --host HOST --vm VM --room-url URL --topology-url URL --output DIRECTORY [--flavor rdk|prpl] [--room ROOM]';
@@ -130,12 +140,59 @@ function ready(entry, healthNodes, clients = 10) {
 }
 
 // A pod's backhaul as its own stations see it: its 2.4 GHz backhaul BSS (b-ap-24), and the
-// station that is connected (bhaul-sta-50 or bhaul-sta-24) with its parent BSSID.
+// station that is connected (bhaul-sta-50 or bhaul-sta-24) with its parent BSSID; its OVSDB
+// link to its agent (the Manager row: connected, seconds since it connected) and how long that
+// station has been connected (seconds).
 function podState(raw) {
-  const connected = [...String(raw).matchAll(/^STATION=(\S+) Connected to ([0-9a-f:]{17})/gmi)];
-  return {apBssid: String(raw).match(/^AP=([0-9a-f:]{17})/mi)?.[1]?.toLowerCase() || null,
-    station: connected[0]?.[1] || null, parentBssid: connected[0]?.[2]?.toLowerCase() || null,
-    connectedStations: connected.length};
+  const text = String(raw);
+  const connected = [...text.matchAll(/^STATION=(\S+) Connected to ([0-9a-f:]{17})/gmi)];
+  const station = connected[0]?.[1] || null;
+  const manager = text.match(/^MANAGER=(\S+)(.*)$/m);
+  const managerAge = manager?.[2].match(/"sec_since_connect","(\d+)"/)?.[1];
+  const stationAge = station ? text.match(new RegExp('^CONNECTED_TIME=' + station + ' (\\d+)$', 'm'))?.[1] : undefined;
+  return {apBssid: text.match(/^AP=([0-9a-f:]{17})/mi)?.[1]?.toLowerCase() || null,
+    station, parentBssid: connected[0]?.[2]?.toLowerCase() || null, connectedStations: connected.length,
+    managerConnected: manager?.[1] === 'true', managerAge: managerAge === undefined ? null : Number(managerAge),
+    stationAge: stationAge === undefined ? null : Number(stationAge)};
+}
+
+// A pod's link to its agent settled after a move: connected since its station's association
+// (the link opened again after the move), or a link that outlived a station connected for
+// graceS; a pod with no uplink or a missing reading is not settled.
+function podLinkSettled(pod, graceS = POD_LINK_GRACE_S) {
+  if (!pod?.station || !pod.managerConnected || !Number.isFinite(pod.managerAge) || !Number.isFinite(pod.stationAge)) {
+    return false;
+  }
+  return pod.managerAge <= pod.stationAge || pod.stationAge >= graceS;
+}
+
+// backhaul-pod-chain, after the chain is verified: every pod's link to its agent settled, then
+// the chained room ready in every sample for settleMs (one that is not starts it again), at most
+// deadlineMs. Times are from the call, by now().
+async function holdAfterMove({sample, delay, now, healthNodes, settleMs = POD_SETTLE_MS,
+  deadlineMs = POD_SETTLE_MAX_MS, pollMs = 3000}) {
+  const start = now();
+  let linkAt = null, readyFrom = null, last;
+  for (;;) {
+    last = await sample();
+    const at = now() - start;
+    if (linkAt === null && Object.values(last.pods || {}).every(pod => podLinkSettled(pod))) linkAt = at;
+    if (linkAt !== null && podChain(last) && ready(last, healthNodes)) {
+      if (readyFrom === null) readyFrom = at;
+      if (at - readyFrom >= settleMs) return {settled: true, linkAt, readyFrom, settledAt: at};
+    } else {
+      readyFrom = null;
+    }
+    if (at >= deadlineMs) break;
+    await delay(pollMs);
+  }
+  return {settled: false, linkAt, readyFrom, settledAt: null,
+    reason: linkAt === null ? "a pod's link to its agent did not settle after the move" :
+      'the chained room did not stay ready for ' + settleMs / 1000 + ' s',
+    pods: Object.fromEntries(Object.entries(last.pods || {}).map(([role, pod]) => [role,
+      {parent: pod.parent, station: pod.station, managerConnected: pod.managerConnected, managerAge: pod.managerAge,
+        stationAge: pod.stationAge, error: pod.error}])),
+    diagnostics: convergenceDiagnostics(last)};
 }
 
 // backhaul-pod-chain: pod_2 on pod_1's 2.4 GHz backhaul BSS with its 2.4 GHz station, natively
@@ -305,7 +362,9 @@ async function run(options) {
   }
 
   async function podParents(nativeNodes) {
-    const script = 'printf "AP=%s\\n" "$(cat /sys/class/net/b-ap-24/address 2>/dev/null)"; for s in bhaul-sta-50 bhaul-sta-24; do printf "STATION=%s %s\\n" "$s" "$(iw dev $s link 2>/dev/null | head -1)"; done';
+    const script = 'printf "AP=%s\\n" "$(cat /sys/class/net/b-ap-24/address 2>/dev/null)"; for s in bhaul-sta-50 bhaul-sta-24; do printf "STATION=%s %s\\n" "$s" "$(iw dev $s link 2>/dev/null | head -1)"; done; ' +
+      // its link to its agent and its stations' connected times (holdAfterMove)
+      'printf "MANAGER=%s\\n" "$(/usr/opensync/tools/ovsh -r s Manager is_connected status 2>/dev/null | head -1)"; for s in bhaul-sta-50 bhaul-sta-24; do printf "CONNECTED_TIME=%s %s\\n" "$s" "$(iw dev $s station dump 2>/dev/null | grep -o "connected time:[[:space:]]*[0-9]*" | grep -o "[0-9]*$" | head -1)"; done';
     const readings = await Promise.all(Object.entries(adapterContainers).map(async ([role, container]) => {
       try {
         const result = await execute(...hostCommand(options.host,
@@ -466,6 +525,12 @@ async function run(options) {
           edges: observation.mesh?.backhaul_edges};
         assert.equal(currentRoom.podOutcome.chainVerified, true,
           'The pod chain was not verified: ' + JSON.stringify(currentRoom.podOutcome));
+        // the moved pod onboards again once its link to its agent is back: the hold starts after
+        currentRoom.podOutcome.settle = await holdAfterMove({sample: () => sample('pod-chain-settle', true), delay,
+          now: Date.now, healthNodes: profile.healthNodes});
+        assert.equal(currentRoom.podOutcome.settle.settled, true, 'The pod chain did not settle after the move: ' +
+          JSON.stringify(currentRoom.podOutcome.settle));
+        const holdFrom = currentRoom.samples.length;
         await roomPage.bringToFront();
         await roomPage.screenshot({path: path.join(directory, id + '-room.png')});
         await topologyPage.bringToFront();
@@ -478,7 +543,7 @@ async function run(options) {
           if (index < 2) await delay(1500);
         }
         currentRoom.podOutcome.chainHeld = held.every(entry => podChain(entry) && ready(entry, profile.healthNodes)) &&
-          meshLoss(currentRoom.samples, profile.healthNodes) === -1;
+          meshLoss(currentRoom.samples.slice(holdFrom), profile.healthNodes) === -1;
         assert.equal(currentRoom.podOutcome.chainHeld, true, 'The pod chain or the room did not hold: ' +
           JSON.stringify(convergenceDiagnostics(held.at(-1))));
         currentRoom.returnKernel = await auditClients(held.at(-1));
@@ -673,7 +738,7 @@ async function run(options) {
 }
 
 module.exports = {summarizeNative, interfaceState, stackProfile, ready, meshComplete, meshLoss, parentPaths, nativeCycles,
-  convergenceDiagnostics, podState, podChain, podsUnchained};
+  convergenceDiagnostics, podState, podChain, podsUnchained, podLinkSettled, holdAfterMove};
 if (require.main === module) {
   let options;
   try { options = optionsFrom(process.argv.slice(2)); }
