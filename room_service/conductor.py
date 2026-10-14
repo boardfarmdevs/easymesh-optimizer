@@ -30,6 +30,7 @@ from optimizer.verifier import OutcomeVerifier
 from wmdcfg.observers import mesh_health
 
 from .events import EventStore
+from .model_dips import DIP_POLL_SECONDS, BssDips
 from .steering_safety import SteeringSafety
 from .client_wifi import read_client_link
 from .interactions import InteractionError
@@ -1099,12 +1100,13 @@ class LiveConductor:
         expected_devices = int(health["expected_mesh_devices"]) + wired
         expected_clients = int(health["expected_clients"])
         adapters = _adapter_devices(self.plan)
+        dips = BssDips()
         while not self.stop_event.is_set() and self._active():
             try:
                 room = self.room_state() if self.room_state else None
                 if room is not None:
                     expected_clients = int(room.get("expected_online_clients", expected_clients))
-                payload = mesh_health(expected_devices, expected_clients, adapters, wired)
+                payload = mesh_health(expected_devices, expected_clients, adapters, wired, bss_rows=True)
                 payload["pool_clients"] = int(health["expected_clients"])
                 payload["expected_online_clients"] = expected_clients
                 payload.setdefault("expected_mesh_devices", expected_devices)
@@ -1125,11 +1127,16 @@ class LiveConductor:
                     and all(payload.get(f"model_{key}") == payload.get(f"expected_model_{key}")
                             for key in ("devices", "radios", "bsses", "associated"))
                 )
+                # a short BSS count names what the model lacks (RDK: the model's rows), and
+                # the dip is its own event once the count is back (model_dips)
+                closed = dips.observe(payload, time.time())
                 payload["evidence_storage"] = self.store.storage_status()
                 self.store.emit("health.sample", self._time(), payload, producer="health")
+                if closed:
+                    self.store.emit("health.bss_dip", self._time(), closed, producer="health")
             except (OSError, ValueError, subprocess.SubprocessError) as error:
                 self._record_error("health", error, fatal=False)
-            if self._sleep(interval):
+            if self._sleep(DIP_POLL_SECONDS if dips.open else interval):
                 break
 
     def _narrative_worker(self) -> None:

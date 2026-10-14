@@ -39,6 +39,30 @@ assert.equal(diagnostics.fleet.converged, true);
 assert.equal(diagnostics.nodes.extender_4.apOperating, true);
 assert.equal(diagnostics.nodes.extender_4.pingOk, true);
 assert.equal(Object.keys(diagnostics.nodes).length, 5);
+assert.deepEqual(diagnostics.modelBssMissing, []);
+// a short sample's missing BSS by its device's role, and a backhaul link's row by the other
+// device that lists its BSSID; an AL the mesh has no role for stays an AL
+{
+  const {namedBsses, noteDip, convergenceDiagnostics} = require('./room-backhaul-features.js');
+  const nodes = [{device_id: '02:00:00:00:01:20', role: 'extender_1'}, {device_id: '00:60:2F:DA:68:E4', role: 'gateway'}];
+  const link = {device: '02:00:00:00:01:20', band: '5', bssid: '02:00:00:61:4f:f3', ssid: 'mesh_backhaul',
+    shared_with: ['00:60:2f:da:68:e4', '02:00:00:00:99:20']};
+  assert.deepEqual(namedBsses([link], nodes),
+    [{...link, role: 'extender_1', shared_with: ['gateway', '02:00:00:00:99:20']}]);
+  const short = convergenceDiagnostics({...healthy, mesh: {nodes},
+    health: {...healthy.health, model_bsses: 71, expected_model_bsses: 72, model_bss_missing: [{...link, since: 'x'}]}});
+  assert.deepEqual([short.modelBsses, short.expectedModelBsses, short.modelBssMissing[0].role], [71, 72, 'extender_1']);
+  // each closed dip once (the latest health.bss_dip event, by its sequence), with its room
+  const dips = [];
+  const state = {network: {mesh: {nodes}}, latest: {'health.bss_dip': {sequence: 7, payload: {
+    first_short: 'a', min_seconds: 2, max_seconds: 13, missing: [{...link, first: 'a', last: 'b'}]}}}};
+  assert.equal(noteDip(dips, state, 'backhaul-pod-chain').missing[0].role, 'extender_1');
+  assert.equal(noteDip(dips, state, 'backhaul-pod-chain'), null);
+  assert.equal(noteDip(dips, {latest: {}}, 'restore'), null);
+  assert.deepEqual(dips.map(dip => [dip.sequence, dip.room, dip.max_seconds]), [[7, 'backhaul-pod-chain', 13]]);
+  assert.match(harness, /noteDip\(report\.modelDips, state, currentRoom\?\.id \|\| 'restore'\)/);
+  assert.match(harness, /'Ten-client native recovery must converge after return: ' \+\s*JSON\.stringify\(convergenceDiagnostics\(currentRoom\.returnObservation\)\)/);
+}
 assert.equal(ready(healthy, 6), false);
 assert.equal(ready({...healthy, native: {...healthy.native, nodes: {}}}, 5), false);
 assert.equal(ready({...healthy, native: {...healthy.native, parents: {...healthy.native.parents, extender_4: null}}}, 5), false);

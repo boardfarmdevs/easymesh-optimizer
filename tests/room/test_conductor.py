@@ -118,6 +118,46 @@ class ConductorProjectionTests(unittest.TestCase):
                     conductor._health_worker()
                     self.assertEqual(store.current()["latest"]["health.sample"]["payload"]["healthy"], healthy)
 
+    def test_health_names_a_dips_missing_bss_and_records_the_dip_when_it_closes(self):
+        # the model's rows on every sample; a short count names the BSS the last complete sample
+        # had, the worker samples every second until the count is back, and the closed dip is
+        # its own event
+        conductor, store = self._conductor()
+        conductor.manifest["health"] = {"interval_seconds": 10, "expected_mesh_devices": 5, "expected_clients": 100}
+        conductor.room_state = lambda: {"expected_online_clients": 10}
+        rows = [{"device": "02:00:00:00:01:20", "band": "5", "bssid": f"02:00:00:00:00:0{index}", "ssid": "s"}
+                for index in range(3)]
+
+        def sample(rows):
+            return {"api_active": 10, "model_bsses": len(rows), "expected_model_bsses": 3,
+                    "model_bss_rows": list(rows)}
+
+        published = []
+        original = store.emit
+
+        def emit(kind, *args, **kwargs):
+            event = original(kind, *args, **kwargs)
+            published.append((kind, event["payload"]))
+            return event
+
+        with patch.object(conductor, "_wait_for_run", return_value=True), \
+                patch.object(conductor, "_active", return_value=True), \
+                patch.object(conductor, "_sleep", side_effect=[False, False, True]) as sleep, \
+                patch.object(store, "emit", side_effect=emit), \
+                patch("room_service.conductor.mesh_health",
+                      side_effect=[sample(rows), sample(rows[:2]), sample(rows)]) as health:
+            conductor._health_worker()
+        self.assertTrue(all(call.kwargs.get("bss_rows") is True for call in health.call_args_list))
+        self.assertEqual([call.args[0] for call in sleep.call_args_list], [10.0, 1.0, 10.0])
+        samples = [payload for kind, payload in published if kind == "health.sample"]
+        self.assertEqual([[row["bssid"] for row in payload["model_bss_missing"]] for payload in samples],
+                         [[], ["02:00:00:00:00:02"], []])
+        self.assertTrue(all("model_bss_rows" not in payload for payload in samples))
+        dips = [payload for kind, payload in published if kind == "health.bss_dip"]
+        self.assertEqual([[row["bssid"] for row in dip["missing"]] for dip in dips], [["02:00:00:00:00:02"]])
+        self.assertEqual([kind for kind, _ in published], ["health.sample", "health.sample", "health.sample",
+                                                           "health.bss_dip"])
+
     def test_health_publishes_the_controllers_devices_from_the_labs_inventory(self):
         # 5 (the Wi-Fi nodes), 6 (and a wired extender), 8 (and two OpenSync pods): the
         # count tools that run a policy in the lab take (no policy names one)

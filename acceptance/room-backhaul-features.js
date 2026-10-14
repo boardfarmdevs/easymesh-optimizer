@@ -231,9 +231,31 @@ function nativeCycles(parents) {
   return [...cycles.values()];
 }
 
+// The controller model's BSSes a short health sample lacks (the room service's model_dips), each
+// with its device's role in the mesh and the roles of the devices that list its BSSID too (a
+// backhaul link's row); the AL MAC where the mesh has no role for it.
+function namedBsses(rows, meshNodes) {
+  const roles = Object.fromEntries((meshNodes || []).map(node => [String(node.device_id).toLowerCase(), node.role]));
+  const role = device => roles[device] || device;
+  return (rows || []).map(row => ({...row, role: role(row.device), shared_with: (row.shared_with || []).map(role)}));
+}
+
+// A model dip the room service closed since the last one recorded (its latest health.bss_dip
+// event), named, with the room that was playing; null when there is none.
+function noteDip(dips, state, room) {
+  const event = state?.latest?.['health.bss_dip'];
+  if (!event || dips.some(dip => dip.sequence === event.sequence)) return null;
+  const dip = {sequence: event.sequence, room, ...event.payload,
+    missing: namedBsses(event.payload.missing, state.network?.mesh?.nodes)};
+  dips.push(dip);
+  return dip;
+}
+
 function convergenceDiagnostics(entry) {
   return {healthy: entry.health?.healthy, activeClients: entry.health?.api_active,
     topologyNodes: entry.topology?.nodes.length, topologyClients: entry.topology?.stations.length,
+    modelBsses: entry.health?.model_bsses, expectedModelBsses: entry.health?.expected_model_bsses,
+    modelBssMissing: namedBsses(entry.health?.model_bss_missing, entry.mesh?.nodes),
     fleet: entry.optimizer?.fleet,
     nodes: Object.fromEntries(Object.entries(entry.native.nodes).map(([role, node]) => [role,
       {apOperating: node.apOperating, fronthaulAps: node.fronthaulAps,
@@ -279,7 +301,7 @@ async function run(options) {
   const save = (name, value) => fs.writeFileSync(path.join(directory, name), JSON.stringify(value, null, 2) + '\n');
   const report = {flavor, browserHost: os.hostname(), labHost: options.host, vm: options.vm,
     started: new Date().toISOString(), scope: 'Geometry-room playback, native parent/traffic convergence and restoration; bounded, not a soak',
-    rooms: [], errors: [], featureChecksPassed: false, recoveryPassed: false};
+    rooms: [], errors: [], featureChecksPassed: false, recoveryPassed: false, modelDips: []};
   await execute(...guestAuditInstallCommand(options.host, options.vm), {timeout: 30000, maxBuffer: 1048576});
   // devices the room does not own (the VM's foreign-devices file): out of the topology samples
   const foreign = await foreignDevices({...options, flavor});
@@ -419,6 +441,7 @@ async function run(options) {
     const result = {at: new Date().toISOString(), label, interactions, visible, topology,
       health: state.health, mesh: state.network?.mesh, clients: state.network?.clients, optimizer: state.optimizer,
       native: includeNative ? await native() : undefined};
+    noteDip(report.modelDips, state, currentRoom?.id || 'restore');
     if (includeNative) result.nativeCycles = nativeCycles(result.native.parents);
     if (includeNative && Object.keys(adapterContainers).length) result.pods = await podParents(result.native.nodes);
     if (currentRoom) currentRoom.samples.push(result);
@@ -642,7 +665,8 @@ async function run(options) {
         currentRoom.nativeOutcome.returnRecoveryObserved = returned(currentRoom.returnObservation);
         if (id === 'backhaul-parent-handover')
           currentRoom.nativeOutcome.upperRelayRestored = currentRoom.returnObservation.native.parents.extender_3 === 'extender_1';
-        assert.equal(currentRoom.nativeOutcome.returnRecoveryObserved, true, 'Ten-client native recovery must converge after return');
+        assert.equal(currentRoom.nativeOutcome.returnRecoveryObserved, true, 'Ten-client native recovery must converge after return: ' +
+          JSON.stringify(convergenceDiagnostics(currentRoom.returnObservation)));
         currentRoom.returnKernel = await auditClients(currentRoom.returnObservation);
       }
       // A native backhaul cycle in any sample: recorded on both stacks, a failure on
@@ -738,7 +762,7 @@ async function run(options) {
 }
 
 module.exports = {summarizeNative, interfaceState, stackProfile, ready, meshComplete, meshLoss, parentPaths, nativeCycles,
-  convergenceDiagnostics, podState, podChain, podsUnchained, podLinkSettled, holdAfterMove};
+  convergenceDiagnostics, namedBsses, noteDip, podState, podChain, podsUnchained, podLinkSettled, holdAfterMove};
 if (require.main === module) {
   let options;
   try { options = optionsFrom(process.argv.slice(2)); }
