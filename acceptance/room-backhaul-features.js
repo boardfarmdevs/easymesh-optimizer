@@ -266,6 +266,7 @@ function convergenceDiagnostics(entry) {
     modelApBsses: entry.health?.model_ap_bsses, expectedModelApBsses: entry.health?.expected_model_ap_bsses,
     modelLinkRows: entry.health?.model_link_rows, expectedModelLinkRows: entry.health?.expected_model_link_rows,
     modelBssMissing: namedBsses(entry.health?.model_bss_missing, entry.mesh?.nodes),
+    unexpectedDevices: entry.mesh?.unexpected_devices,
     fleet: entry.optimizer?.fleet,
     nodes: Object.fromEntries(Object.entries(entry.native.nodes).map(([role, node]) => [role,
       {apOperating: node.apOperating, fronthaulAps: node.fronthaulAps,

@@ -1247,6 +1247,31 @@ class ConductorProjectionTests(unittest.TestCase):
             {"parent_role": "gateway", "child_role": "extender_1", "media_type": "Ethernet"},
         ])
 
+    def test_an_undeclared_extra_device_is_named_and_a_declared_one_left_out(self):
+        # a device the room does not own and the lab has not declared (foreign-devices): named by
+        # its AL MAC, so a short or surplus count says which device; a declared one is left out
+        conductor, _store = self._conductor()
+        topology = {
+            "nodes": [
+                {"id": "00:60:2f:00:00:d4", "name": "Controller", "backhaulMedia": "Ethernet", "haulTypes": []},
+                {"id": "02:00:00:00:10:20", "name": "Agent-1", "backhaulMedia": "Ethernet",
+                 "haulTypes": [{"BSSList": [{"BSSID": "02:00:00:00:01:01"}]}]},
+                {"id": "02:65:E7:7C:E0:E1", "name": "Agent-9", "backhaulMedia": "Ethernet",
+                 "haulTypes": [{"BSSList": [{"BSSID": "02:aa:00:00:00:01", "vapMode": 0}]}]},
+            ],
+            "edges": [],
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            listed = Path(directory) / "foreign-devices"
+            with patch.dict("os.environ", {"EASYMESH_FOREIGN_DEVICES": str(listed)}):
+                mesh = conductor._topology_payload(topology)
+                self.assertEqual(
+                    mesh["unexpected_devices"], [{"device_id": "02:65:e7:7c:e0:e1", "name": "Agent-9"}]
+                )
+                listed.write_text("02:65:e7:7c:e0:e1  # an external pod, declared\n")
+                self.assertEqual(conductor._topology_payload(topology)["unexpected_devices"], [])
+        self.assertEqual([item["role"] for item in mesh["nodes"]], ["gateway"])
+
 
 if __name__ == "__main__":
     unittest.main()

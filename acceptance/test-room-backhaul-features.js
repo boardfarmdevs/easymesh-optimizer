@@ -57,6 +57,10 @@ assert.deepEqual(diagnostics.modelBssMissing, []);
     short.modelApBsses, short.expectedModelApBsses, short.modelLinkRows, short.expectedModelLinkRows,
     short.modelBssMissing[0].role, short.modelBssMissing[0].kind],
   [true, false, 4.2, 71, 72, 64, 64, 7, 8, 'extender_1', 'link']);
+  // a device the room does not own and the lab has not declared, named in the failure
+  const surplus = convergenceDiagnostics({...healthy,
+    mesh: {nodes, unexpected_devices: [{device_id: '02:65:e7:7c:e0:e1', name: 'Agent-9'}]}});
+  assert.deepEqual(surplus.unexpectedDevices, [{device_id: '02:65:e7:7c:e0:e1', name: 'Agent-9'}]);
   // each closed dip once (the latest health.bss_dip event, by its sequence), with the room that
   // was playing when it started, whichever room's sample first saw it
   const {roomAt} = require('./room-backhaul-features.js');

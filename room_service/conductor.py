@@ -27,7 +27,7 @@ from optimizer.rf_observations import property_catalog
 from optimizer.streaming import StreamingCandidateProvider
 from optimizer.state import ClientPolicyState, PolicyState
 from optimizer.verifier import OutcomeVerifier
-from wmdcfg.observers import mesh_health
+from wmdcfg.observers import foreign_devices, mesh_health
 
 from .events import EventStore
 from .model_dips import DIP_POLL_SECONDS, LINK_SETTLE_SECONDS, BssDips, LinkSettle, health_verdict
@@ -671,10 +671,16 @@ class LiveConductor:
                 "backhaul_edges": [],
                 "wired_edges": [],
                 "unresolved_edges": 0,
+                "unexpected_devices": [],
             }
 
         role_by_device_id: dict[str, str] = {}
         nodes = []
+        # a device the room does not own: none of its BSSes a compiled role's, not the logical
+        # controller, and not declared (the lab's foreign-devices): named, so a short or
+        # surplus count says which device
+        foreign = foreign_devices()
+        unexpected = []
         for node in topology.get("nodes", []) or []:
             device_id = str(node.get("id") or "").lower()
             role = None
@@ -697,6 +703,8 @@ class LiveConductor:
                 # The logical controller is intentionally not a separate
                 # object in the physical room; Agent-1/gateway represents the
                 # co-located controller+agent device.
+                if node.get("name") != "Controller" and device_id not in foreign:
+                    unexpected.append({"device_id": device_id, "name": node.get("name") or ""})
                 continue
             role_by_device_id[device_id] = role
             nodes.append({
@@ -759,6 +767,7 @@ class LiveConductor:
                 wired_edges, key=lambda item: (item["parent_role"], item["child_role"])
             ),
             "unresolved_edges": unresolved,
+            "unexpected_devices": sorted(unexpected, key=lambda item: item["device_id"]),
         }
 
     def _traffic_probe(self, room: dict[str, Any] | None = None) -> dict[str, Any]:
