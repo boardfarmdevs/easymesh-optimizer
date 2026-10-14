@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import unittest
 
-from room_service.model_dips import BssDips
+from room_service.model_dips import BssDips, LinkSettle, health_verdict
 
+ZERO = "00:00:00:00:00:00"
 ROWS = [
     {"device": "00:60:2f:da:68:e4", "band": "5", "bssid": "02:00:00:61:4f:f3", "ssid": "mesh_backhaul"},
     {"device": "02:00:00:00:01:20", "band": "5", "bssid": "02:00:00:61:4f:f3", "ssid": "mesh_backhaul"},
@@ -82,12 +83,86 @@ class BssDipTests(unittest.TestCase):
         dips.observe(payload, T0 + 3)
         self.assertEqual([row["bssid"] for row in payload["model_bss_missing"]], ["02:00:00:21:76:0e"])
 
+    def test_a_missing_row_keeps_its_kind_and_a_zero_bssid_is_shared_with_no_one(self):
+        # two wired devices' link rows both read 00:00:00:00:00:00: no BSSID, not one they share
+        rows = [{"device": "00:60:2f:da:68:e4", "band": "5", "bssid": ZERO, "ssid": "mesh_backhaul", "kind": "link"},
+                {"device": "02:00:00:00:69:20", "band": "5", "bssid": ZERO, "ssid": "mesh_backhaul", "kind": "link"},
+                {**ROWS[2], "kind": "bss"}]
+        dips = BssDips()
+        dips.observe(health(rows), T0)
+        payload = health(rows[1:])
+        dips.observe(payload, T0 + 1)
+        self.assertEqual([(row["device"], row["kind"], row["shared_with"]) for row in payload["model_bss_missing"]],
+                         [("00:60:2f:da:68:e4", "link", [])])
+
     def test_a_stack_without_rows_is_left_alone(self):
         dips = BssDips()
         payload = {"model_bsses": 1, "expected_model_bsses": 3}
         self.assertIsNone(dips.observe(payload, T0))
         self.assertNotIn("model_bss_missing", payload)
         self.assertFalse(dips.open)
+
+
+# a settled lab of one agent (nine BSSes and its link row) and ten clients
+SPLIT = {"api_active": 10, "topology_nodes": 3, "complete_nodes": 3,
+         "model_devices": 1, "model_radios": 3, "model_bsses": 10, "model_ap_bsses": 9, "model_link_rows": 1,
+         "model_associated": 10, "expected_model_devices": 1, "expected_model_radios": 3,
+         "expected_model_bsses": 10, "expected_model_ap_bsses": 9, "expected_model_link_rows": 1,
+         "expected_model_associated": 10}
+
+
+class LinkSettleTests(unittest.TestCase):
+    def test_the_link_rows_mismatch_is_timed_from_its_first_sample(self):
+        settle = LinkSettle()
+        self.assertEqual(settle.observe(SPLIT, 100.0), 0.0)
+        short = {**SPLIT, "model_link_rows": 0}
+        self.assertEqual(settle.observe(short, 101.0), 0.0)
+        # a surplus is a mismatch too (a row added before the old one went)
+        self.assertEqual(settle.observe({**SPLIT, "model_link_rows": 2}, 104.5), 3.5)
+        self.assertEqual(settle.observe(SPLIT, 106.0), 0.0)
+        self.assertEqual(settle.observe(short, 107.0), 0.0)
+
+    def test_without_the_split_there_is_nothing_to_time(self):
+        settle = LinkSettle()
+        self.assertIsNone(settle.observe({"model_bsses": 10, "expected_model_bsses": 10}, 1.0))
+        self.assertIsNone(settle.since)
+
+
+class HealthVerdictTests(unittest.TestCase):
+    def verdict(self, payload, link_short=0.0, settle=30.0):
+        return health_verdict(payload, clients=10, nodes=3, link_short=link_short, settle=settle)
+
+    def test_a_complete_model_is_healthy_both_ways(self):
+        self.assertEqual(self.verdict(SPLIT), (True, True))
+
+    def test_a_missing_access_point_bss_is_a_fault_at_once(self):
+        self.assertEqual(self.verdict({**SPLIT, "model_bsses": 9, "model_ap_bsses": 8, "complete_nodes": 2}),
+                         (False, False))
+
+    def test_link_rows_settle_for_the_window_then_fail(self):
+        short = {**SPLIT, "model_bsses": 9, "model_link_rows": 0, "complete_nodes": 2}
+        self.assertEqual(self.verdict(short, link_short=0.0), (False, True))
+        self.assertEqual(self.verdict(short, link_short=30.0), (False, True))
+        self.assertEqual(self.verdict(short, link_short=30.5), (False, False))
+        # no window: the raw verdict
+        self.assertEqual(self.verdict(short, link_short=0.0, settle=0.0), (False, True))
+        self.assertEqual(self.verdict(short, link_short=0.1, settle=0.0), (False, False))
+
+    def test_settling_links_do_not_cover_anything_else(self):
+        short = {**SPLIT, "model_bsses": 9, "model_link_rows": 0, "complete_nodes": 2}
+        for other in ({"api_active": 9}, {"topology_nodes": 2}, {"model_ap_bsses": 8},
+                      {"model_radios": 2}, {"model_devices": 0}, {"model_associated": 9}):
+            with self.subTest(other=other):
+                self.assertEqual(self.verdict({**short, **other}), (False, False))
+
+    def test_without_the_split_the_verdict_is_the_one_count(self):
+        # prplMesh, or a medium without link rows: model_bsses as before, nothing settles
+        whole = {key: value for key, value in SPLIT.items() if "ap_bsses" not in key and "link_rows" not in key}
+        self.assertEqual(self.verdict(whole, link_short=None), (True, True))
+        self.assertEqual(self.verdict({**whole, "model_bsses": 9, "complete_nodes": 2}, link_short=None),
+                         (False, False))
+        prpl = {"api_active": 10, "topology_nodes": 3, "complete_nodes": 3}
+        self.assertEqual(self.verdict(prpl, link_short=None), (True, True))
 
 
 if __name__ == "__main__":

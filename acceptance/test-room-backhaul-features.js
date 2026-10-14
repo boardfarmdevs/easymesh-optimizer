@@ -50,17 +50,32 @@ assert.deepEqual(diagnostics.modelBssMissing, []);
   assert.deepEqual(namedBsses([link], nodes),
     [{...link, role: 'extender_1', shared_with: ['gateway', '02:00:00:00:99:20']}]);
   const short = convergenceDiagnostics({...healthy, mesh: {nodes},
-    health: {...healthy.health, model_bsses: 71, expected_model_bsses: 72, model_bss_missing: [{...link, since: 'x'}]}});
-  assert.deepEqual([short.modelBsses, short.expectedModelBsses, short.modelBssMissing[0].role], [71, 72, 'extender_1']);
-  // each closed dip once (the latest health.bss_dip event, by its sequence), with its room
+    health: {...healthy.health, healthy_raw: false, link_short_seconds: 4.2, model_bsses: 71, expected_model_bsses: 72,
+      model_ap_bsses: 64, expected_model_ap_bsses: 64, model_link_rows: 7, expected_model_link_rows: 8,
+      model_bss_missing: [{...link, kind: 'link', since: 'x'}]}});
+  assert.deepEqual([short.healthy, short.healthyRaw, short.linkShortSeconds, short.modelBsses, short.expectedModelBsses,
+    short.modelApBsses, short.expectedModelApBsses, short.modelLinkRows, short.expectedModelLinkRows,
+    short.modelBssMissing[0].role, short.modelBssMissing[0].kind],
+  [true, false, 4.2, 71, 72, 64, 64, 7, 8, 'extender_1', 'link']);
+  // each closed dip once (the latest health.bss_dip event, by its sequence), with the room that
+  // was playing when it started, whichever room's sample first saw it
+  const {roomAt} = require('./room-backhaul-features.js');
+  const windows = [{id: 'backhaul-wired-parent', started: Date.parse('2026-10-14T13:03:00Z')},
+    {id: 'backhaul-pod-chain', started: Date.parse('2026-10-14T13:05:40Z')},
+    {id: 'restore', started: Date.parse('2026-10-14T13:08:00Z')}];
+  assert.equal(roomAt(windows, Date.parse('2026-10-14T13:02:59Z')), 'before-rooms');
+  assert.equal(roomAt(windows, Date.parse('2026-10-14T13:08:00Z')), 'restore');
   const dips = [];
   const state = {network: {mesh: {nodes}}, latest: {'health.bss_dip': {sequence: 7, payload: {
-    first_short: 'a', min_seconds: 2, max_seconds: 13, missing: [{...link, first: 'a', last: 'b'}]}}}};
-  assert.equal(noteDip(dips, state, 'backhaul-pod-chain').missing[0].role, 'extender_1');
-  assert.equal(noteDip(dips, state, 'backhaul-pod-chain'), null);
-  assert.equal(noteDip(dips, {latest: {}}, 'restore'), null);
-  assert.deepEqual(dips.map(dip => [dip.sequence, dip.room, dip.max_seconds]), [[7, 'backhaul-pod-chain', 13]]);
-  assert.match(harness, /noteDip\(report\.modelDips, state, currentRoom\?\.id \|\| 'restore'\)/);
+    first_short: '2026-10-14T13:05:50Z', min_seconds: 41, max_seconds: 60.2,
+    missing: [{...link, first: 'a', last: 'b'}]}}}};
+  assert.equal(noteDip(dips, state, windows).missing[0].role, 'extender_1');
+  assert.equal(noteDip(dips, state, [...windows, {id: 'later', started: Date.parse('2026-10-14T13:09:00Z')}]), null);
+  assert.equal(noteDip(dips, {latest: {}}, windows), null);
+  assert.deepEqual(dips.map(dip => [dip.sequence, dip.room, dip.max_seconds]), [[7, 'backhaul-pod-chain', 60.2]]);
+  assert.match(harness, /noteDip\(report\.modelDips, state, roomWindows\)/);
+  assert.match(harness, /currentRoom = \{id, samples: \[\]\};\s*roomWindows\.push\(\{id, started: Date\.now\(\)\}\)/);
+  assert.match(harness, /roomWindows\.push\(\{id: 'restore', started: Date\.now\(\)\}\);\s*await load\('default'\)/);
   assert.match(harness, /'Ten-client native recovery must converge after return: ' \+\s*JSON\.stringify\(convergenceDiagnostics\(currentRoom\.returnObservation\)\)/);
 }
 assert.equal(ready(healthy, 6), false);

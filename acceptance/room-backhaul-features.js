@@ -240,13 +240,20 @@ function namedBsses(rows, meshNodes) {
   return (rows || []).map(row => ({...row, role: role(row.device), shared_with: (row.shared_with || []).map(role)}));
 }
 
+// The room that was playing at a time: the last of the run's windows ({id, started} in ms,
+// in order) that had started by then, 'before-rooms' before the first.
+function roomAt(windows, time) {
+  return windows.filter(window => window.started <= time).at(-1)?.id || 'before-rooms';
+}
+
 // A model dip the room service closed since the last one recorded (its latest health.bss_dip
-// event), named, with the room that was playing; null when there is none.
-function noteDip(dips, state, room) {
+// event), named, with the room that was playing when it started (its first short sample);
+// null when there is none.
+function noteDip(dips, state, windows) {
   const event = state?.latest?.['health.bss_dip'];
   if (!event || dips.some(dip => dip.sequence === event.sequence)) return null;
-  const dip = {sequence: event.sequence, room, ...event.payload,
-    missing: namedBsses(event.payload.missing, state.network?.mesh?.nodes)};
+  const dip = {sequence: event.sequence, room: roomAt(windows, Date.parse(event.payload.first_short)),
+    ...event.payload, missing: namedBsses(event.payload.missing, state.network?.mesh?.nodes)};
   dips.push(dip);
   return dip;
 }
@@ -254,7 +261,10 @@ function noteDip(dips, state, room) {
 function convergenceDiagnostics(entry) {
   return {healthy: entry.health?.healthy, activeClients: entry.health?.api_active,
     topologyNodes: entry.topology?.nodes.length, topologyClients: entry.topology?.stations.length,
+    healthyRaw: entry.health?.healthy_raw, linkShortSeconds: entry.health?.link_short_seconds,
     modelBsses: entry.health?.model_bsses, expectedModelBsses: entry.health?.expected_model_bsses,
+    modelApBsses: entry.health?.model_ap_bsses, expectedModelApBsses: entry.health?.expected_model_ap_bsses,
+    modelLinkRows: entry.health?.model_link_rows, expectedModelLinkRows: entry.health?.expected_model_link_rows,
     modelBssMissing: namedBsses(entry.health?.model_bss_missing, entry.mesh?.nodes),
     fleet: entry.optimizer?.fleet,
     nodes: Object.fromEntries(Object.entries(entry.native.nodes).map(([role, node]) => [role,
@@ -322,6 +332,8 @@ async function run(options) {
   let changed = false;
   let baseline = null;
   let currentRoom = null;
+  // when each room, and the restore after them, started: a model dip's room (noteDip)
+  const roomWindows = [];
   let bindings = {};
   let hostMonitor = null;
   const request = async endpoint => {
@@ -441,7 +453,7 @@ async function run(options) {
     const result = {at: new Date().toISOString(), label, interactions, visible, topology,
       health: state.health, mesh: state.network?.mesh, clients: state.network?.clients, optimizer: state.optimizer,
       native: includeNative ? await native() : undefined};
-    noteDip(report.modelDips, state, currentRoom?.id || 'restore');
+    noteDip(report.modelDips, state, roomWindows);
     if (includeNative) result.nativeCycles = nativeCycles(result.native.parents);
     if (includeNative && Object.keys(adapterContainers).length) result.pods = await podParents(result.native.nodes);
     if (currentRoom) currentRoom.samples.push(result);
@@ -516,6 +528,7 @@ async function run(options) {
     report.startParents = (await sample('start', true)).native.parents;
     for (const id of selectedRooms) {
       currentRoom = {id, samples: []};
+      roomWindows.push({id, started: Date.now()});
       report.rooms.push(currentRoom);
       console.log(id + ': loading geometry RF');
       currentRoom.load = await load(id);
@@ -695,6 +708,7 @@ async function run(options) {
     if (changed && baseline) {
       try {
         console.log('Restoring default RF and checking native recovery (at most 60 s, then a hold of at most 150 s)');
+        roomWindows.push({id: 'restore', started: Date.now()});
         await load('default');
         currentRoom = null;
         const restored = await request('/api/demo/interactions');
@@ -762,7 +776,7 @@ async function run(options) {
 }
 
 module.exports = {summarizeNative, interfaceState, stackProfile, ready, meshComplete, meshLoss, parentPaths, nativeCycles,
-  convergenceDiagnostics, namedBsses, noteDip, podState, podChain, podsUnchained, podLinkSettled, holdAfterMove};
+  convergenceDiagnostics, namedBsses, noteDip, roomAt, podState, podChain, podsUnchained, podLinkSettled, holdAfterMove};
 if (require.main === module) {
   let options;
   try { options = optionsFrom(process.argv.slice(2)); }

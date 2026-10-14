@@ -30,7 +30,7 @@ from optimizer.verifier import OutcomeVerifier
 from wmdcfg.observers import mesh_health
 
 from .events import EventStore
-from .model_dips import DIP_POLL_SECONDS, BssDips
+from .model_dips import DIP_POLL_SECONDS, LINK_SETTLE_SECONDS, BssDips, LinkSettle, health_verdict
 from .steering_safety import SteeringSafety
 from .client_wifi import read_client_link
 from .interactions import InteractionError
@@ -44,6 +44,8 @@ from optimizer.band_scan import SOURCE as BAND_SCAN_SOURCE
 
 
 CANDIDATE_PRIORITY_WINDOW_SECONDS = 120
+# the health worker's clock for how long the model's link rows have differed (tests set it)
+_monotonic = time.monotonic
 
 
 def _observer(stack, base_url, **options):
@@ -1100,7 +1102,9 @@ class LiveConductor:
         expected_devices = int(health["expected_mesh_devices"]) + wired
         expected_clients = int(health["expected_clients"])
         adapters = _adapter_devices(self.plan)
+        settle = float(health.get("link_settle_seconds", LINK_SETTLE_SECONDS))
         dips = BssDips()
+        links = LinkSettle()
         while not self.stop_event.is_set() and self._active():
             try:
                 room = self.room_state() if self.room_state else None
@@ -1120,13 +1124,17 @@ class LiveConductor:
                 # and the controller model's counts; prplMesh's neither (the mesh's
                 # devices, and no model counts to compare).
                 nodes = payload.get("expected_topology_nodes", expected_devices)
-                payload["healthy"] = (
-                    payload.get("api_active") == expected_clients
-                    and payload.get("topology_nodes") == nodes
-                    and payload.get("complete_nodes") == nodes
-                    and all(payload.get(f"model_{key}") == payload.get(f"expected_model_{key}")
-                            for key in ("devices", "radios", "bsses", "associated"))
-                )
+                # RDK's model counts its access point BSSes and its link rows apart; the link
+                # rows may differ for the settle window (model_dips.health_verdict), and the
+                # raw verdict is published beside the settled one
+                link_short = links.observe(payload, _monotonic())
+                payload["link_settle_seconds"] = settle
+                payload["link_short_seconds"] = None if link_short is None else round(link_short, 1)
+                payload["healthy_raw"], payload["healthy"] = health_verdict(
+                    payload, expected_clients, nodes, link_short, settle)
+                if payload["healthy"] and payload.get("complete_nodes") != nodes:
+                    payload["complete_nodes_raw"] = payload.get("complete_nodes")
+                    payload["complete_nodes"] = nodes
                 # a short BSS count names what the model lacks (RDK: the model's rows), and
                 # the dip is its own event once the count is back (model_dips)
                 closed = dips.observe(payload, time.time())
@@ -1136,7 +1144,7 @@ class LiveConductor:
                     self.store.emit("health.bss_dip", self._time(), closed, producer="health")
             except (OSError, ValueError, subprocess.SubprocessError) as error:
                 self._record_error("health", error, fatal=False)
-            if self._sleep(DIP_POLL_SECONDS if dips.open else interval):
+            if self._sleep(DIP_POLL_SECONDS if dips.open or links.since is not None else interval):
                 break
 
     def _narrative_worker(self) -> None:

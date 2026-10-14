@@ -158,6 +158,58 @@ class ConductorProjectionTests(unittest.TestCase):
         self.assertEqual([kind for kind, _ in published], ["health.sample", "health.sample", "health.sample",
                                                            "health.bss_dip"])
 
+    def test_health_lets_link_rows_settle_for_the_manifests_window_and_shows_both_verdicts(self):
+        # the model short of a link row: healthy while it settles (link_settle_seconds, 20 here),
+        # healthy_raw false all along, then a fault once the window is over; the worker samples
+        # every second while the link rows differ
+        conductor, store = self._conductor()
+        conductor.manifest["health"] = {"interval_seconds": 10, "expected_mesh_devices": 5, "expected_clients": 100,
+                                        "link_settle_seconds": 20}
+        conductor.room_state = lambda: {"expected_online_clients": 10}
+        settled = {"api_active": 10, "topology_nodes": 6, "complete_nodes": 6, "expected_topology_nodes": 6,
+                   "model_devices": 5, "model_radios": 15, "model_bsses": 50, "model_ap_bsses": 45,
+                   "model_link_rows": 5, "model_associated": 14, "expected_model_devices": 5,
+                   "expected_model_radios": 15, "expected_model_bsses": 50, "expected_model_ap_bsses": 45,
+                   "expected_model_link_rows": 5, "expected_model_associated": 14}
+        short = {**settled, "model_bsses": 49, "model_link_rows": 4, "complete_nodes": 5}
+        published = []
+        original = store.emit
+
+        def emit(kind, *args, **kwargs):
+            event = original(kind, *args, **kwargs)
+            if kind == "health.sample":
+                published.append(event["payload"])
+            return event
+
+        with patch.object(conductor, "_wait_for_run", return_value=True), \
+                patch.object(conductor, "_active", return_value=True), \
+                patch.object(conductor, "_sleep", side_effect=[False, False, False, False, True]) as sleep, \
+                patch.object(store, "emit", side_effect=emit), \
+                patch("room_service.conductor._monotonic", side_effect=[0.0, 10.0, 25.0, 31.0, 32.0]), \
+                patch("room_service.conductor.mesh_health",
+                      side_effect=[dict(settled), dict(short), dict(short), dict(short), dict(settled)]):
+            conductor._health_worker()
+        self.assertEqual([(payload["healthy"], payload["healthy_raw"], payload["link_short_seconds"])
+                          for payload in published],
+                         [(True, True, 0.0), (True, False, 0.0), (True, False, 15.0), (False, False, 21.0),
+                          (True, True, 0.0)])
+        self.assertTrue(all(payload["link_settle_seconds"] == 20.0 for payload in published))
+        # complete_nodes follows the settled verdict, the medium's own count kept beside it
+        self.assertEqual([(payload["complete_nodes"], payload.get("complete_nodes_raw")) for payload in published],
+                         [(6, None), (6, 5), (6, 5), (5, None), (6, None)])
+        self.assertEqual([call.args[0] for call in sleep.call_args_list], [10.0, 1.0, 1.0, 1.0, 10.0])
+
+    def test_health_settles_link_rows_for_thirty_seconds_by_default(self):
+        conductor, store = self._conductor()
+        conductor.manifest["health"] = {"interval_seconds": 1, "expected_mesh_devices": 5, "expected_clients": 100}
+        conductor.room_state = lambda: {"expected_online_clients": 10}
+        with patch.object(conductor, "_wait_for_run", return_value=True), \
+                patch.object(conductor, "_active", return_value=True), \
+                patch.object(conductor, "_sleep", return_value=True), \
+                patch("room_service.conductor.mesh_health", return_value={"api_active": 10}):
+            conductor._health_worker()
+        self.assertEqual(store.current()["latest"]["health.sample"]["payload"]["link_settle_seconds"], 30.0)
+
     def test_health_publishes_the_controllers_devices_from_the_labs_inventory(self):
         # 5 (the Wi-Fi nodes), 6 (and a wired extender), 8 (and two OpenSync pods): the
         # count tools that run a policy in the lab take (no policy names one)
